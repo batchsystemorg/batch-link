@@ -5,15 +5,14 @@ import websocket
 import os
 
 class Socket:
-    def __init__(self, logger_ws, on_open, on_message, on_close, on_error, url, token):
-        self._logger_ws = logger_ws
-        self.connect(on_open, on_message, on_close, on_error, url, token)
+    def __init__(self, on_open, on_message, on_close, on_error, url):
+        self.connect(on_open, on_message, on_close, on_error, url)
 
     def run(self):
         try:
             self.socket.run_forever()
         except Exception as e:
-            self._logger_ws.error("Socket run: %s", e)
+            print("Socket run: %s", e)
             pass
 
     def send_msg(self, msg):
@@ -23,14 +22,14 @@ class Socket:
             if self.connected() and self.socket is not None:
                 self.socket.send(msg)
         except Exception as e:
-            self._logger_ws.error("Socket send_msg: %s", e)
+            print("Socket send_msg: %s", e)
             pass
 
     def connected(self):
         return self.socket.sock and self.socket.sock.connected
 
-    def connect(self, on_open, on_message, on_close, on_error, url, token):
-        url = url + "?token=" + token
+    def connect(self, on_open, on_message, on_close, on_error, url):
+        # url = url + "?token=" + token
         self.socket = websocket.WebSocketApp(
             url,
             on_open=on_open,
@@ -40,7 +39,7 @@ class Socket:
         )
 
     def disconnect(self):
-        self._logger_ws.debug("Disconnecting the websocket...")
+        print("Disconnecting the websocket...")
         self.socket.keep_running = False
         self.socket.close()
-        self._logger_ws.debug("The websocket has been closed.")
+        print("The websocket has been closed.")
