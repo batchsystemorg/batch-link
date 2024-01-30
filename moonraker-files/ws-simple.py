@@ -1,5 +1,5 @@
 # --------------- BATCH WORKS API <-> MOONRAKER  --------------- #
-
+import configparser
 import websocket
 import threading
 import time
@@ -12,6 +12,18 @@ remote_websocket_url = "wss://moonraker-api.onrender.com"
 printer_websocket_url = "ws://localhost/websocket"
 printer_url = "http://localhost"
 
+
+# --------------------------- READ Printer Config --------------------------- #
+config_file_path = '/home/pi/printer_data/config/batch-server.cfg'
+config = configparser.ConfigParser()
+config.read(config_file_path)
+auth_key = None
+
+if 'batch_auth' in config and 'UUID' in config['batch_auth']:
+    uuid = config['batch_auth']['UUID']
+    print('Printer KEY:', auth_key)
+else:
+    print('Printer has no key')
 
 # --------------------------- REMOTE WEBSOCKT --------------------------- #
 def remote_on_message(ws, message):
@@ -31,7 +43,12 @@ def remote_on_error(ws, error):
 def remote_on_close(ws, close_status_code, close_msg):
     print(f"Connection remote closed with status code {close_status_code}: {close_msg}")
 
-def remote_on_open(ws): 
+def remote_on_open(ws):
+    auth_message = {
+        "action": "auth",
+        "content": uuid
+    }
+    ws.send(json.dumps(auth_message))
     print("Connection remote opened")
 
 remote_ws = websocket.WebSocketApp(remote_websocket_url, on_open=remote_on_open, on_message=remote_on_message, on_error=remote_on_error, on_close=remote_on_close)
