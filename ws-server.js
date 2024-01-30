@@ -17,7 +17,7 @@ wss.on('connection', (ws, req) => {
   };
 
   ws.send(JSON.stringify(command));*/
-  const printerAddress = `https://${clientIP}:7130`
+  const printerAddress = `http://${clientIP}:7125`
 //   const getStatus = `/printer/objects/query?gcode_move&toolhead&extruder=target,temperature`;
   const getStatus = '/printer/info'
 
