@@ -18,6 +18,21 @@ const server = app.listen(port, () => {
 server.keepAliveTimeout = 120 * 1000;
 server.headersTimeout = 120 * 1000;
 
+server.on('exit', (code) => {
+  console.log(`Server exited with code ${code}`);
+});
+
+
+process.on('uncaughtException', (err) => {
+  console.error(`Uncaught Exception: ${err}`);
+  // Restart the server
+  server.close(() => {
+    server.listen(port, () => {
+      console.log(`Server restarted on port ${port}`);
+    });
+  });
+});
+
 
 const html = `
 <!DOCTYPE html>

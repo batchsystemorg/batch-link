@@ -7,6 +7,4 @@ NODE_SERVER_PORT="3777"
 # NODE_SERVER_IP="http://localhost"
 # NODE_SERVER_PORT="10000"
 
-# Your connection logic here
-# For example, you might use curl to make an HTTP request
 curl -v "$NODE_SERVER_IP:$NODE_SERVER_PORT"
