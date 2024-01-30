@@ -81,7 +81,7 @@ remote_connection_thread.start()
 # --------------------------- PRINTER WEBSOCKT --------------------------- #
 def printer_on_message(ws, message):
     # print(f"Received from printer: {message}")
-    return
+    print('Incoming message from printer')
 
 def printer_on_error(ws, error):
     print(f"Error from printer: {error}")
