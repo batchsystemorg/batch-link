@@ -1,5 +1,6 @@
 const WebSocket = require('ws');
 const axios = require('axios');
+const https = require('https');
 const fs = require('fs');
 
 const wss = new WebSocket.Server({ port: 3777 });
@@ -19,7 +20,13 @@ wss.on('connection', (ws, req) => {
   const printerAddress = `http://${clientIP}`
   const getStatus = `/printer/objects/query?gcode_move&toolhead&extruder=target,temperature`;
 
-  axios.get(printerAddress + getStatus)
+
+  const instance = axios.create({
+    httpsAgent: new https.Agent({  
+      rejectUnauthorized: false
+    })
+  });
+  instance.get(printerAddress + getStatus)
     .then(response => {
       console.log(`Received response from printer: ${JSON.stringify(response.data)}`);
       printFile(printerAddress);
