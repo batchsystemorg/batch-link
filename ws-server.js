@@ -18,7 +18,11 @@ wss.on('connection', (ws, req) => {
 
   ws.send(JSON.stringify(command));*/
   console.log('sending WS message to get Printer Status')
-  ws.send('getPrinterStatus')
+  const command =  {
+    action: 'print',
+    content: 'http://batch.space/paperclip.gcode'
+  }
+  ws.send(JSON.stringify(command))
 
 
   ws.on('message', (message) => {

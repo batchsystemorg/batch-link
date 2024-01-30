@@ -1,31 +1,82 @@
+# --------------- BATCH WORKS API <-> MOONRAKER  --------------- #
+
 import websocket
+import threading
 import time
 import requests
 import json
+import io
+
+# --------------------------- URLs --------------------------- #
+remote_websocket_url = "wss://moonraker-api.onrender.com"
+printer_websocket_url = "ws://localhost/websocket"
+printer_url = "http://localhost"
 
 
-def on_message(ws, message):
-    print(f"Received: {message}")
-    if(message == 'getPrinterStatus'):
-      response = requests.get('http://localhost/printer/info')
-      ws.send(json.dumps(response.json()))
+# --------------------------- REMOTE WEBSOCKT --------------------------- #
+def remote_on_message(ws, message):
+    print(f"Received from remote: {message}")
+    data = json.loads(message)
+    if 'action' in data and 'content' in data:
+        if data['action'] == 'print':
+            print('Received print command for URL: ', data['content'])
+            print_file(printer_url, data['content'])
+        else:
+            print('Unknown Command')
 
 
-def on_error(ws, error):
-    print(f"Error: {error}")
+def remote_on_error(ws, error):
+    print(f"Error remote: {error}")
 
-def on_close(ws, close_status_code, close_msg):
+def remote_on_close(ws, close_status_code, close_msg):
+    print(f"Connection remote closed with status code {close_status_code}: {close_msg}")
+
+def remote_on_open(ws): 
+    print("Connection remote opened")
+
+remote_ws = websocket.WebSocketApp(remote_websocket_url, on_open=remote_on_open, on_message=remote_on_message, on_error=remote_on_error, on_close=remote_on_close)
+remote_thread = threading.Thread(target=remote_ws.run_forever)
+remote_thread.start()
+
+
+# --------------------------- PRINTER WEBSOCKT --------------------------- #
+def printer_on_message(ws, message):
+    print(f"Received from printer: {message}")
+
+def printer_on_error(ws, error):
+    print(f"Error from printer: {error}")
+
+def printer_on_close(ws, close_status_code, close_msg):
     print(f"Connection closed with status code {close_status_code}: {close_msg}")
 
-def on_open(ws):
-    print("Connection opened")
-    x = requests.get('https://w3schools.com')
-    print(x.status_code)
+def printer_on_open(ws):
+    print("Connection to printer opened")
 
-# websocket_url = "ws://192.168.110.80:3777"  # Replace with your Render.com URL
-websocket_url = "wss://moonraker-api.onrender.com"  # Replace with your Render.com URL
 
-ws = websocket.WebSocketApp(websocket_url, on_message=on_message, on_error=on_error, on_close=on_close)
-ws.on_open = on_open
+printer_ws = websocket.WebSocketApp(printer_websocket_url, on_open=printer_on_open, on_message=printer_on_message, on_error=printer_on_error, on_close=printer_on_close)
+printer_thread = threading.Thread(target=printer_ws.run_forever)
+printer_thread.start()
 
-ws.run_forever()
+
+# --------------------------- POST REQUEST FUNCTIONALITY --------------------------- #
+
+def print_file(printer_address, file_url):
+    try:
+        file_response = requests.get(file_url)
+        file_response.raise_for_status()
+
+        file_stream = io.BytesIO(file_response.content)
+
+        # Set the filename for the uploaded file
+        filename = file_url.split("/")[-1]
+
+        # Prepare the files and data for the upload
+        files = {'file': (filename, file_stream)}
+        data = {'print': 'true'}
+
+        # Perform the file upload
+        response = requests.post(printer_address + '/server/files/upload', files=files, data=data)
+        response.raise_for_status()
+        print('File transfer successful:', response.text)
+    except requests.exceptions.RequestException as e:
+        print('File transfer failed:', e)
