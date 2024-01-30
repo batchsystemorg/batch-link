@@ -17,25 +17,8 @@ wss.on('connection', (ws, req) => {
   };
 
   ws.send(JSON.stringify(command));*/
-  const printerAddress = `http://${clientIP}:7125`
-//   const getStatus = `/printer/objects/query?gcode_move&toolhead&extruder=target,temperature`;
-  const getStatus = '/printer/info'
-
-  console.log('printer address ', printerAddress)
-  const instance = axios.create({
-    httpsAgent: new https.Agent({  
-      rejectUnauthorized: false
-    })
-  });
-  instance.get(printerAddress + getStatus)
-    .then(response => {
-      console.log(`Received response from printer: ${JSON.stringify(response.data)}`);
-      printFile(printerAddress);
-    })
-    .catch(error => {
-      console.log(error);
-      console.error(`Error sending GET request to printer: ${error.message}`);
-    });
+  console.log('sending WS message to get Printer Status')
+  ws.send('getPrinterStatus')
 
 
   ws.on('message', (message) => {
