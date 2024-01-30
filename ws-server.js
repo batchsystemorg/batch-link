@@ -16,7 +16,7 @@ wss.on('connection', (ws, req) => {
   };
 
   ws.send(JSON.stringify(command));*/
-  const printerAddress = `http://${clientIP}`
+  const printerAddress = `https://${clientIP}`
   const getStatus = `/printer/objects/query?gcode_move&toolhead&extruder=target,temperature`;
 
   axios.get(printerAddress + getStatus)
