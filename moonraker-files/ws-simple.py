@@ -7,6 +7,9 @@ import requests
 import json
 import io
 
+
+reconnect_interval = 30
+
 # --------------------------- URLs --------------------------- #
 remote_websocket_url = "wss://moonraker-api.onrender.com"
 printer_websocket_url = "ws://localhost/websocket"
@@ -51,9 +54,28 @@ def remote_on_open(ws):
     ws.send(json.dumps(auth_message))
     print("Connection remote opened")
 
-remote_ws = websocket.WebSocketApp(remote_websocket_url, on_open=remote_on_open, on_message=remote_on_message, on_error=remote_on_error, on_close=remote_on_close)
-remote_thread = threading.Thread(target=remote_ws.run_forever)
-remote_thread.start()
+def remote_connection():
+    while True:
+        try:
+            remote_ws = websocket.WebSocketApp(
+                remote_websocket_url,
+                on_open=remote_on_open,
+                on_message=remote_on_message,
+                on_error=remote_on_error,
+                on_close=remote_on_close
+            )
+            remote_thread = threading.Thread(target=remote_ws.run_forever)
+            remote_thread.start()
+            remote_thread.join()  # Wait for the WebSocket to close
+        except Exception as e:
+            print(f"Error connecting to remote server: {e}")
+        
+        print(f"Attempting to reconnect in {reconnect_interval} seconds...")
+        time.sleep(reconnect_interval)
+
+# Start the remote connection in a separate thread
+remote_connection_thread = threading.Thread(target=remote_connection)
+remote_connection_thread.start()
 
 
 # --------------------------- PRINTER WEBSOCKT --------------------------- #

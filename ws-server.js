@@ -8,7 +8,6 @@ const wss = new WebSocket.Server({ port: 3777 });
 wss.on('connection', (ws, req) => {
   const clientIP = req.connection.remoteAddress.replace('::ffff:', '');
   console.log(`Client connected from IP: ${clientIP}`);
-  console.log('sending WS message to get Printer Status')
 
   const command =  {
     action: 'print',
