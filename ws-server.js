@@ -18,9 +18,10 @@ wss.on('connection', (ws, req) => {
 
   ws.send(JSON.stringify(command));*/
   const printerAddress = `https://${clientIP}`
-  const getStatus = `/printer/objects/query?gcode_move&toolhead&extruder=target,temperature`;
+//   const getStatus = `/printer/objects/query?gcode_move&toolhead&extruder=target,temperature`;
+  const getStatus = '/printer/info'
 
-
+  console.log('printer address ', printerAddress)
   const instance = axios.create({
     httpsAgent: new https.Agent({  
       rejectUnauthorized: false
