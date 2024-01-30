@@ -48,7 +48,6 @@ def remote_on_open(ws):
         "action": "auth",
         "content": uuid
     }
-    print
     ws.send(json.dumps(auth_message))
     print("Connection remote opened")
 

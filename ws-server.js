@@ -18,11 +18,12 @@ wss.on('connection', (ws, req) => {
 
 
   ws.on('message', (message) => {
+    console.log('Raw message incoming: ', message)
     try {
       const data = JSON.parse(message);
       console.log(`Received from ${clientIP}:`, data);
       if (data.action === 'auth') {
-        console.log('Received authentication response:', data.content);
+        console.log('Received authentication response:', data.content)
         // check if that can be found in the DB and assign it to the PrinterModel
       } else {
         console.log('Unknown command:', data);
