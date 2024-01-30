@@ -13,7 +13,8 @@ def on_close(ws, close_status_code, close_msg):
 def on_open(ws):
     print("Connection opened")
 
-websocket_url = "ws://localhost:3777"  # Replace with your Render.com URL
+# websocket_url = "ws://192.168.110.80:3777"  # Replace with your Render.com URL
+websocket_url = "ws://moonraker-api.onrender.com"  # Replace with your Render.com URL
 
 ws = websocket.WebSocketApp(websocket_url, on_message=on_message, on_error=on_error, on_close=on_close)
 ws.on_open = on_open
