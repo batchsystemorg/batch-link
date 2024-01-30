@@ -9,12 +9,12 @@ wss.on('connection', (ws, req) => {
   const clientIP = req.connection.remoteAddress.replace('::ffff:', '');
   console.log(`Client connected from IP: ${clientIP}`);
   console.log('sending WS message to get Printer Status')
-  
+
   const command =  {
     action: 'print',
     content: 'http://batch.space/paperclip.gcode'
   }
-  ws.send(JSON.stringify(command))
+  // ws.send(JSON.stringify(command))
 
 
   ws.on('message', (message) => {

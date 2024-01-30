@@ -48,6 +48,7 @@ def remote_on_open(ws):
         "action": "auth",
         "content": uuid
     }
+    print
     ws.send(json.dumps(auth_message))
     print("Connection remote opened")
 
@@ -58,7 +59,8 @@ remote_thread.start()
 
 # --------------------------- PRINTER WEBSOCKT --------------------------- #
 def printer_on_message(ws, message):
-    print(f"Received from printer: {message}")
+    # print(f"Received from printer: {message}")
+    return
 
 def printer_on_error(ws, error):
     print(f"Error from printer: {error}")
