@@ -25,6 +25,7 @@ wss.on('connection', (ws, req) => {
       printFile(printerAddress);
     })
     .catch(error => {
+      console.log(error);
       console.error(`Error sending GET request to printer: ${error.message}`);
     });
 
