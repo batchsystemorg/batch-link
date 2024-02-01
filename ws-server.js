@@ -21,7 +21,7 @@ wss.on('connection', (ws, req) => {
     try {
       const data = JSON.parse(message);
       console.log(`Received from ${clientIP}:`, data);
-      if (data.action === 'auth') {
+      if (data.action === 'uuid') {
         console.log('Received authentication response:', data.content)
         // check if that can be found in the DB and assign it to the PrinterModel
       } else {
