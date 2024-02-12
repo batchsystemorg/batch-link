@@ -1,3 +1,4 @@
+import sys
 import asyncio
 import configparser
 import requests
@@ -7,7 +8,7 @@ import websockets
 
 class BatchPrinterConnect:
     def __init__(self):
-        self.config_file_path = '/home/pi/printer_data/config/batch-server.cfg'
+        self.config_file_path = '/home/pi/printer_data/config/batch-link.cfg'
         self.config = configparser.ConfigParser()
         self.config.read(self.config_file_path)
 
@@ -25,25 +26,12 @@ class BatchPrinterConnect:
             response.raise_for_status()
 
             result = json.loads(response.text).get('result')
-            status = result.get('state')
+            self.status = result.get('state')
         except Exception as e:
             print('Something went wrong trying to get the initial state: ', e)
 
-        self.updates = {
-            'bed_temperature': None,
-            'nozzle_temperature': None,
-            'status': status,
-            'print_stats': {
-                "filename": None,
-                "total_duration": None,
-                "print_duration": None,
-                "state": None,
-                "message": None
-            },
-            'cancelled': None,
-            'progress': None,
-        }
-
+        self.printer_connection_id = None
+        self.initialUpdatesValues()
         self.update_interval = 5
 
         self.remote_websocket = None
@@ -55,9 +43,11 @@ class BatchPrinterConnect:
     async def remote_connection(self):
         while True:
             try:
+                print('Trying to connect to websocket with URL: ', self.remote_websocket_url)
                 async with websockets.connect(self.remote_websocket_url) as websocket:
                     self.remote_websocket = websocket
                     await self.remote_on_open(websocket)
+                    self.initialUpdatesValues()
                     async for message in websocket:
                         await self.remote_on_message(websocket, message)
                     
@@ -75,6 +65,15 @@ class BatchPrinterConnect:
                 filename = data['content']['file_name']
                 url = data['content']['url']
                 self.print_file(filename, url)
+            elif data['action'] == 'stop_print':
+                print('Received stop print command for URL')
+                self.stop_print()
+            elif data['action'] == 'pause_print':
+                print('Received pause print command for URL')
+                self.pause_print()
+            elif data['action'] == 'resume_print':
+                print('Received resume print command for URL')
+                self.resume_print()
             else:
                 print('Unknown Command')
 
@@ -100,19 +99,19 @@ class BatchPrinterConnect:
             print(f"Attempting to reconnect to printer in {self.reconnect_interval} seconds...")
             await asyncio.sleep(self.reconnect_interval)
 
-    # Define printer_on_message, printer_on_error, printer_on_close, printer_on_open similarly
     async def printer_on_message(self, ws, message):
         data = json.loads(message)
         method = data.get('method')
         params = data.get('params')
         if (method is not None) and (params is not None):
             if (method == 'notify_status_update') and self.remote_websocket:
-                print('Params from moonraker before decoding them: ', params)
+                # print('Params from moonraker before decoding them: ', params)
                 self.decode_updates(params)
                 return
 
     async def printer_on_open(self, ws):
         print("Connection to printer opened")
+        # GET http://host/printer/objects/query?webhooks&virtual_sdcard&print_stats&toolhead&extruder&idle_timeout&heater_bed
         subscription_message = json.dumps({
             "jsonrpc": "2.0",
             "method": "printer.objects.subscribe",
@@ -126,11 +125,18 @@ class BatchPrinterConnect:
                     "virtual_sdcard": ["progress"]
                 }
             },
-            "id": 1234
+            "id": self.uuid
         })
+        try:
+            await ws.send(subscription_message)
+            # await requests.get('http://localhost/printer/objects/query?webhooks&virtual_sdcard&print_stats&toolhead&extruder&idle_timeout&heater_bed')
+        except websockets.exceptions.ConnectionClosed as e:
+            print(e)
+        except websockets.exceptions.InvalidHandshake as e:
+            print(e)
+        except Exception as e:
+            print(e)
 
-        # await ws.send(printer_subscribtion)
-        await ws.send(subscription_message)
 
     # ************* PRINTER HTTP *************** #
     def print_file(self, filename, url):
@@ -151,9 +157,59 @@ class BatchPrinterConnect:
             response.raise_for_status()
             self.updates['cancelled'] = None
             print('File transfer successful:', response.text)
-        except requests.exceptions.RequestException as e:
+        except requests.exceptions.RequestException or response.exceptions.RequestException as e:
             print('File transfer failed:', e)
     
+    def stop_print(self):
+        try:
+            print('Stopping print')
+            response = requests.post(self.printer_url + '/printer/print/cancel')
+            if response:
+                print('Successfully stopped print')
+
+        except Exception as e:
+            print('Stopping print failed: ', e)
+
+
+    def pause_print(self):
+        try:
+            print('Pausing Print')
+            response = requests.post(self.printer_url + '/printer/print/pause')
+            if response:
+                print('Successfully paused print')
+
+        except requests.exceptions.RequestException as e:
+            print('Stopping print failed: ', e)
+
+    def resume_print(self):
+        try:
+            print('Resuming Print')
+            response = requests.post(self.printer_url + '/printer/print/resume')
+            if response:
+                print('Successfully resumed print')
+
+        except requests.exceptions.RequestException as e:
+            print('Stopping print failed: ', e)
+
+
+
+    
+    # ************* UTILS *************** #
+    def initialUpdatesValues(self):
+        self.updates = {
+            'bed_temperature': None,
+            'nozzle_temperature': None,
+            'status': self.status,
+            'print_stats': {
+                "filename": None,
+                "total_duration": None,
+                "print_duration": None,
+                "state": None,
+                "message": None
+            },
+            'cancelled': None,
+            'progress': None,
+        }
     def decode_updates(self, params):
         for param in params:
             try:
@@ -186,24 +242,27 @@ class BatchPrinterConnect:
 
             if print_stats is not None:
                 self.updates['print_stats'] = print_stats
-                cancelled = print_stats.get('state')
-                if cancelled == 'cancelled':
-                    self.updates['cancelled'] = True
-            else:
-                self.updates['print_stats'] = None
+                try:
+                    cancelled = print_stats.get('state')
+                    if cancelled == 'cancelled':
+                        self.updates['cancelled'] = True
+                except:
+                    continue
+                    
+                try:
+                    virtual_sdcard = param.get('virtual_sdcard')
+                    progress = virtual_sdcard.get('progress')
+                    self.updates['progress'] = progress
+                except Exception as e:
+                    print('Param progress couldnt be found')
 
-            try:
-                virtual_sdcard = param.get('virtual_sdcard')
-                progress = virtual_sdcard.get('progress')
-                self.updates['progress'] = progress
-            except Exception as e:
-                print('Param progress couldnt be found')
+
 
 
     async def send_printer_update(self):
         while True:
             try:
-                print('Updates before checking if filled: ', self.updates)
+                # print('Updates before checking if filled: ', self.updates)
                 if any(value is not None for value in self.updates.values()):
                     msg = {
                         'action': 'printer_update',
@@ -211,16 +270,13 @@ class BatchPrinterConnect:
                     }
                     serialised_json = json.dumps(msg)
                     self.updates['cancelled'] = None
-                    print('sending updates to API ', serialised_json)
+                    # print('sending updates to API ', serialised_json)
                     await self.remote_websocket.send(serialised_json)
 
             except Exception as e:
                 print(f"Error sending updates to remote server: {e}")
 
             await asyncio.sleep(self.update_interval)
-             
-
-
 
 def main():
     communicator = BatchPrinterConnect()
