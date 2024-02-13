@@ -1,4 +1,4 @@
-import sys
+import os
 import asyncio
 import configparser
 import requests
@@ -8,7 +8,8 @@ import websockets
 
 class BatchPrinterConnect:
     def __init__(self):
-        self.config_file_path = '/home/pi/printer_data/config/batch-link.cfg'
+        username = os.environ.get('USER')
+        self.config_file_path = f"/home/{username}/printer_data/config/batch-link.cfg"
         self.config = configparser.ConfigParser()
         self.config.read(self.config_file_path)
 

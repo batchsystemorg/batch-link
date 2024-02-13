@@ -36,4 +36,4 @@ echo 'The batch-link plugin has been successfully installed on your printer and 
 echo -e "\033[32m "
 echo -e "Please add its UUID to your account to have it appear as a pritner"
 echo -e "\033[32;1m${UUID}"
-echo -e "\033[0m "
+echo -e "\033[0m " 
