@@ -12,3 +12,9 @@ SSH into your Pi: ```ssh username@ip-address```
 Tell your SSH session what Terminal to emulate: ```TERM=vt100```
 
 See batch-link.service live logs: ```journalctl -fu batch-link```
+
+
+### Use Pi Image
+Instsall OctoPi on the Pi
+Make sure WiFi data is in the setup config
+Make sure it has a ***.local URL set so you can always easily find it on the local network
