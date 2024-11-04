@@ -12,7 +12,7 @@ username=`whoami`
 
 echo -e "\033[0mAnd we need the password one last time ⊂(◉‿◉)つ"
 
-mv batch-link.cfg /home/$username/printer_data/config
+mv batch-link.cfg /home/$username/.octoprint
 sudo mv /home/$username/batch-link/batch-link.service /etc/systemd/system/
 
 echo -e "\033[0m "
@@ -20,7 +20,7 @@ echo -e "\033[0m "
 service_file=/etc/systemd/system/batch-link.service
 sudo sed -i "s|:::username|$username|g" "$service_file"
 
-config_file=/home/$username/printer_data/config/batch-link.cfg
+config_file=/home/$username/.octoprint/batch-link.cfg
 UUID=$(cat /proc/sys/kernel/random/uuid)
 sudo sed -i "s|:::uuid|$UUID|g" "$config_file"
 

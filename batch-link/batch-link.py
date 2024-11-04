@@ -1,3 +1,4 @@
+
 import os
 import asyncio
 import configparser
@@ -5,11 +6,14 @@ import requests
 import json
 import io
 import websockets
+import re
+import logging
 
 class BatchPrinterConnect:
     def __init__(self):
+        logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
         username = os.environ.get('USER')
-        self.config_file_path = f"/home/{username}/printer_data/config/batch-link.cfg"
+        self.config_file_path = f"/home/{username}/.octoprint/batch-link.cfg"
         self.config = configparser.ConfigParser()
         self.config.read(self.config_file_path)
 
@@ -18,18 +22,23 @@ class BatchPrinterConnect:
         
         self.reconnect_interval = int(self.config['connection_settings']['RECONNECT_INTERVAL'])
         self.remote_websocket_url = self.config['connection_settings']['REMOTE_WS_URL']
-        self.printer_websocket_url = self.config['connection_settings']['MOONRAKER_WS_URL']
-        self.printer_url = self.config['connection_settings']['PRINTER_URL']
-        self.uuid = self.config['printer_details']['UUID']
+        self.octo_api_key = self.config['printer_details']['API_KEY'].strip()
+        self.printer_url = 'http://localhost'
+        self.uuid = self.config['printer_details']['UUID'].strip()
+
+        self.headers = {
+            'X-Api-Key': self.octo_api_key
+        }
 
         try:
-            response = requests.get(self.printer_url + '/printer/info')
+            response = requests.get(self.printer_url + '/api/printer', headers=self.headers)
             response.raise_for_status()
-
-            result = json.loads(response.text).get('result')
-            self.status = result.get('state')
+            printer_info = response.json()
+            logging.info("printer_info, %s", printer_info)
+            self.status = printer_info['state'].get('text', 'unknown')  # Get the printer status (e.g., "Operational")
         except Exception as e:
-            print('Something went wrong trying to get the initial state: ', e)
+            logging.info('Something went wrong trying to get the initial state: %s', e)
+            self.status = 'error'
 
         self.printer_connection_id = None
         self.initialUpdatesValues()
@@ -37,14 +46,14 @@ class BatchPrinterConnect:
 
         self.remote_websocket = None
 
-        if not all([self.remote_websocket_url, self.printer_websocket_url, self.printer_url, self.uuid]):
+        if not all([self.remote_websocket_url, self.printer_url, self.uuid]):
             raise ValueError("One or more configuration parameters are missing.")
 
     # ************* REMOTE *************** #
     async def remote_connection(self):
         while True:
             try:
-                print('Trying to connect to websocket with URL: ', self.remote_websocket_url)
+                logging.info("Trying to connect to websocket with URL: %s", self.remote_websocket_url)
                 async with websockets.connect(self.remote_websocket_url) as websocket:
                     self.remote_websocket = websocket
                     await self.remote_on_open(websocket)
@@ -53,149 +62,193 @@ class BatchPrinterConnect:
                         await self.remote_on_message(websocket, message)
                     
             except Exception as e:
-                print(f"Error connecting to remote server: {e}")
-            print(f"Attempting to reconnect in {self.reconnect_interval} seconds...")
+                logging.info("Error connecting to remote server: %s", e)
+                
+            logging.info("Attempting to reconnect in: %s", self.reconnect_interval)
             await asyncio.sleep(self.reconnect_interval)
 
     async def remote_on_message(self, ws, message):
-        print(f"Received from remote: {message}")
+        logging.info("Received from remote: %s", message)
         data = json.loads(message)
         if 'action' in data and 'content' in data:
             if data['action'] == 'print':
-                print('Received print command for URL: ', data['content']['url'])
+                logging.info('Received print command for URL: %s', data['content']['url'])
                 filename = data['content']['file_name']
                 url = data['content']['url']
                 self.print_file(filename, url)
             elif data['action'] == 'stop_print':
-                print('Received stop print command for URL')
+                logging.info('Received stop print command for URL')
                 self.stop_print()
             elif data['action'] == 'pause_print':
-                print('Received pause print command for URL')
+                logging.info('Received pause print command for URL')
                 self.pause_print()
             elif data['action'] == 'resume_print':
-                print('Received resume print command for URL')
+                logging.info('Received resume print command for URL')
                 self.resume_print()
+            elif data['action'] == 'cmd':
+                logging.info('Received command to execute: %s', data['content'])
+                self.send_command(data['content'])  # New method to send G-code commands
+            elif "move" in data['action']:
+                logging.info("ACTION: %s", data['action'])
+                x, y, z = self.parse_move_command(data['action'])
+                self.move_extruder(x, y, z)
+
             else:
-                print('Unknown Command')
+                logging.info('Unknown Command')
 
     async def remote_on_open(self, ws):
-        print("Remote connection opened")
+        logging.info("Remote connection opened")
         uuid_message = {
             "action": "auth",
             "content": self.uuid,
         }
         await ws.send(json.dumps(uuid_message))
-        print('Message sent: ', uuid_message)
+        logging.info('Message sent: %s', uuid_message)
 
     # ************* PRINTER *************** #
     async def printer_connection(self):
+        octoprint_url = self.printer_url + "/api/printer"
         while True:
             try:
-                async with websockets.connect(self.printer_websocket_url) as websocket:
-                    await self.printer_on_open(websocket)
-                    async for message in websocket:
-                        await self.printer_on_message(websocket, message)
+                response = requests.get(octoprint_url, headers=self.headers)
+                response.raise_for_status()
+                printer_info = response.json()
+
+                logging.info("Printer Info Raw: ")
+                logging.info(printer_info)
+
+                # Process the printer state and temperature
+                state = printer_info['state'].get('text', 'unknown')
+                bed_temp = printer_info['temperature']['bed']['actual']
+                nozzle_temp = printer_info['temperature']['tool0']['actual']
+
+                logging.info("PRINTER BED TEMP, %s", bed_temp)
+
+                self.updates['status'] = state.lower()
+
+                
+                self.updates['bed_temperature'] = bed_temp
+                self.updates['nozzle_temperature'] = nozzle_temp
+
+                await asyncio.sleep(5)  # Adjust the interval as needed
             except Exception as e:
-                print(f"Error connecting to printer moonraker server: {e}")
-            print(f"Attempting to reconnect to printer in {self.reconnect_interval} seconds...")
-            await asyncio.sleep(self.reconnect_interval)
+                logging.info("Error connecting to OctoPrint: %s", e)
+                await asyncio.sleep(self.reconnect_interval)
 
-    async def printer_on_message(self, ws, message):
-        data = json.loads(message)
-        method = data.get('method')
-        params = data.get('params')
-        if (method is not None) and (params is not None):
-            if (method == 'notify_status_update') and self.remote_websocket:
-                # print('Params from moonraker before decoding them: ', params)
-                self.decode_updates(params)
-                return
+    # async def printer_on_message(self, ws, message):
+    #     data = json.loads(message)
+    #     method = data.get('method')
+    #     params = data.get('params')
+    #     if (method is not None) and (params is not None):
+    #         if (method == 'notify_status_update') and self.remote_websocket:
+    #             self.decode_updates(params)
+    #             return
 
-    async def printer_on_open(self, ws):
-        print("Connection to printer opened")
-        # GET http://host/printer/objects/query?webhooks&virtual_sdcard&print_stats&toolhead&extruder&idle_timeout&heater_bed
-        subscription_message = json.dumps({
-            "jsonrpc": "2.0",
-            "method": "printer.objects.subscribe",
-            "params": {
-                "objects": {
-                    "toolhead": ["position", "status"],
-                    "extruder": ["target", "temperature"],
-                    "idle_timeout": ["state", "printing_time"],
-                    "heater_bed": ["target", "temperature"],
-                    "print_stats": ["filename", "total_duration", "print_duration", "state", "message"],
-                    "virtual_sdcard": ["progress"]
-                }
-            },
-            "id": self.uuid
-        })
+    def send_command(self, command):
         try:
-            await ws.send(subscription_message)
-            # await requests.get('http://localhost/printer/objects/query?webhooks&virtual_sdcard&print_stats&toolhead&extruder&idle_timeout&heater_bed')
-        except websockets.exceptions.ConnectionClosed as e:
-            print(e)
-        except websockets.exceptions.InvalidHandshake as e:
-            print(e)
-        except Exception as e:
-            print(e)
-
-
-    # ************* PRINTER HTTP *************** #
+            payload = {
+                "command": command  # Send the command directly to OctoPrint
+            }
+            response = requests.post(
+                f"{self.printer_url}/api/printer/command",
+                headers=self.headers,
+                json=payload
+            )
+            response.raise_for_status()
+            logging.info("Command executed successfully: %s", command)
+        except requests.exceptions.RequestException as e:
+            logging.info("Error executing command: %s", e)
     def print_file(self, filename, url):
+        headers = {
+            'X-Api-Key': self.octo_api_key
+        }
         try:
-            print('trying to upload file with url: ', url)
+            logging.info('trying to upload file with url: %s', url)
             file_response = requests.get(url)
             file_response.raise_for_status()
-
             file_stream = io.BytesIO(file_response.content)
             file_stream.seek(0)
-
             files = {'file': (filename, file_stream)}
             data = {'print': 'true'}
-
-            # Perform the file upload
-            print('Trying to upload to printer URL: ', self.printer_url)
-            response = requests.post(self.printer_url + '/server/files/upload', files=files, data=data)
+            response = requests.post(self.printer_url + '/api/files/local', files=files, data=data, headers=headers)
             response.raise_for_status()
             self.updates['cancelled'] = None
-            print('File transfer successful:', response.text)
-        except requests.exceptions.RequestException or response.exceptions.RequestException as e:
-            print('File transfer failed:', e)
-    
+            logging.info('File transfer successful: %s', response.text)
+        except requests.exceptions.RequestException as e:
+            logging.info('File transfer failed: %s', e)
+
     def stop_print(self):
         try:
-            print('Stopping print')
-            response = requests.post(self.printer_url + '/printer/print/cancel')
+            logging.info('Stopping print')
+            response = requests.post(
+                f"{self.printer_url}/api/job",
+                headers=self.headers,
+                json={'command': 'cancel'}
+            )
             if response:
-                print('Successfully stopped print')
-
+                logging.info('Successfully stopped print')
         except Exception as e:
-            print('Stopping print failed: ', e)
-
+            logging.info('Stopping print failed: %s', e)
 
     def pause_print(self):
         try:
-            print('Pausing Print')
-            response = requests.post(self.printer_url + '/printer/print/pause')
+            logging.info('Pausing Print')
+            response = requests.post(
+                f"{self.printer_url}/api/job",
+                headers=self.headers,
+                json={'command': 'pause', 'action': 'pause'}
+            )
             if response:
-                print('Successfully paused print')
-
+                logging.info('Successfully paused print')
         except requests.exceptions.RequestException as e:
-            print('Stopping print failed: ', e)
+            logging.info('Pausing print failed: %s', e)
 
     def resume_print(self):
         try:
-            print('Resuming Print')
-            response = requests.post(self.printer_url + '/printer/print/resume')
+            logging.info('Resuming Print')
+            response = requests.post(
+                f"{self.printer_url}/api/job",
+                headers=self.headers,
+                json={'command': 'pause', 'action': 'resume'}
+            )
             if response:
-                print('Successfully resumed print')
-
+                logging.info('Successfully resumed print')
         except requests.exceptions.RequestException as e:
-            print('Stopping print failed: ', e)
+            logging.info('Resuming print failed: %s', e)
 
+    def parse_move_command(self, action_string):
+        # Use a regex to extract x, y, and z values
+        match = re.findall(r'[xyz]:-?\d+', action_string)
+        move_values = {}
+        
+        # Iterate through the matches and assign the values to x, y, z
+        for m in match:
+            axis, value = m.split(":")
+            move_values[axis] = int(value)  # Convert value to int (or float if needed)
+        
+        # Now you have the x, y, and z values as a dictionary
+        x = move_values.get('x', 0)  # Default to 0 if not provided
+        y = move_values.get('y', 0)  # Default to 0 if not provided
+        z = move_values.get('z', 0)  # Default to 0 if not provided
+        
+        return x, y, z
 
+    def move_extruder(self, x, y, z):
+        payload = {
+            "command": "jog",
+            "x": x,        # Move 10mm in the X direction
+            "y": y,         # Move 5mm in the Y direction
+            "z": z,        # Move -2mm in the Z direction
+            "speed": 1000,  # Speed of the movement (optional)
+        }
 
-    
-    # ************* UTILS *************** #
+        # Send the command to move the printhead
+        response = requests.post(
+            f"{self.printer_url}/api/printer/printhead",
+            headers=self.headers,
+            json=payload
+        )
+
     def initialUpdatesValues(self):
         self.updates = {
             'bed_temperature': None,
@@ -211,59 +264,65 @@ class BatchPrinterConnect:
             'cancelled': None,
             'progress': None,
         }
-    def decode_updates(self, params):
-        for param in params:
+
+    # def decode_updates(self, params):
+    #     logging.info("Decode updates")
+    #     for param in params:
+    #         try:
+    #             heater_bed = param.get('heater_bed')
+    #             self.updates['bed_temperature'] = heater_bed.get('temperature')
+    #         except Exception:
+    #             pass
+    #         try:
+    #             extruder = param.get('extruder')
+    #             self.updates['nozzle_temperature'] = extruder.get('temperature')
+    #         except Exception:
+    #             pass
+    #         try:
+    #             idle_state = param.get('idle_timeout')
+    #             self.updates['status'] = idle_state.get('state').lower()
+    #         except Exception:
+    #             pass
+    #         try:
+    #             print_stats = param.get('print_stats')
+    #             if print_stats:
+    #                 self.updates['print_stats'] = print_stats
+    #                 if print_stats.get('state') == 'cancelled':
+    #                     self.updates['cancelled'] = True
+    #                 virtual_sdcard = param.get('virtual_sdcard')
+    #                 self.updates['progress'] = virtual_sdcard.get('progress')
+    #         except Exception:
+    #             pass
+
+    async def get_job_data(self):
+        octoprint_url = self.printer_url + "/api/job"
+
+        while True:
             try:
-                heater_bed = param.get('heater_bed')
-                print('Heater Bed: ', heater_bed)
-                bed_temperature = heater_bed.get('temperature')
-                print('Heater bed temp: ', bed_temperature)
-                self.updates['bed_temperature'] = bed_temperature
+                # Fetch the job data from OctoPrint
+                response = requests.get(octoprint_url, headers=self.headers)
+                response.raise_for_status()
+
+                job_info = response.json()
+
+                # Extract the completion percentage from the response
+                progress = job_info['progress']
+                completion = progress.get('completion', 0.0)  # Default to 0.0 if not available
+
+                # Update the progress in self.updates
+                self.updates['progress'] = completion
+                logging.info(f"Print completion: {completion}%")
+
+                # Sleep for the update interval before polling again
+                await asyncio.sleep(self.update_interval)
+                
             except Exception as e:
-                print('Param bed temp not part of this update')
-            
-            try:
-                extruder = param.get('extruder')
-                nozzle_temperature = extruder.get('temperature')
-                self.updates['nozzle_temperature'] = nozzle_temperature
-            except Exception as e:
-                print('Param extruder temp not part of this update')
-
-            try:
-                idle_state = param.get('idle_timeout')
-                state = idle_state.get('state')
-                self.updates['status'] = state.lower()
-            except Exception as e:
-                print('Param idle_state not part of this update')
-
-            try:
-                print_stats = param.get('print_stats')
-            except Exception as e:
-                print('Param idle_state not part of this update')
-
-            if print_stats is not None:
-                self.updates['print_stats'] = print_stats
-                try:
-                    cancelled = print_stats.get('state')
-                    if cancelled == 'cancelled':
-                        self.updates['cancelled'] = True
-                except:
-                    continue
-                    
-                try:
-                    virtual_sdcard = param.get('virtual_sdcard')
-                    progress = virtual_sdcard.get('progress')
-                    self.updates['progress'] = progress
-                except Exception as e:
-                    print('Param progress couldnt be found')
-
-
-
+                logging.info(f"Error getting job data from OctoPrint: {e}")
+                await asyncio.sleep(self.reconnect_interval)
 
     async def send_printer_update(self):
         while True:
             try:
-                # print('Updates before checking if filled: ', self.updates)
                 if any(value is not None for value in self.updates.values()):
                     msg = {
                         'action': 'printer_update',
@@ -271,12 +330,9 @@ class BatchPrinterConnect:
                     }
                     serialised_json = json.dumps(msg)
                     self.updates['cancelled'] = None
-                    # print('sending updates to API ', serialised_json)
                     await self.remote_websocket.send(serialised_json)
-
             except Exception as e:
-                print(f"Error sending updates to remote server: {e}")
-
+                logging.info("Error sending updates to remote server: %s", e)
             await asyncio.sleep(self.update_interval)
 
 def main():
@@ -285,6 +341,7 @@ def main():
     loop.run_until_complete(asyncio.gather(
         communicator.remote_connection(),
         communicator.printer_connection(),
+        communicator.get_job_data(),
         communicator.send_printer_update()
     ))
     loop.close()

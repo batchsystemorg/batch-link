@@ -74,7 +74,7 @@ main() {
                                                                                       
             "
     echo -e "\033[32m"
-    read -p "You got Klipper and Moonraker on your Pi? (Y/N): " copy_option
+    read -p "You got Octoprint on your Pi? (Y/N): " copy_option
     if [[ $copy_option == "Y" || $copy_option == "y" ]]; 
     then
         copy_files
