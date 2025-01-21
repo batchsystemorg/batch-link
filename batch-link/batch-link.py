@@ -107,15 +107,13 @@ class BatchPrinterConnect:
 
     # ************* PRINTER *************** #
     async def printer_connection(self):
-        octoprint_url = self.printer_url + "/api/printer"
+        octoprint_url = self.printer_url + "/api/"
         while True:
             try:
-                response = requests.get(octoprint_url, headers=self.headers)
-                response.raise_for_status()
-                printer_info = response.json()
-
-                logging.info("Printer Info Raw: ")
-                logging.info(printer_info)
+                #### PRINTER DATA ###
+                response_printer = requests.get(octoprint_url + 'printer', headers=self.headers)
+                response_printer.raise_for_status()
+                printer_info = response_printer.json()
 
                 # Process the printer state and temperature
                 state = printer_info['state'].get('text', 'unknown')
@@ -130,10 +128,30 @@ class BatchPrinterConnect:
                 self.updates['bed_temperature'] = bed_temp
                 self.updates['nozzle_temperature'] = nozzle_temp
 
+
+                #### JOB DATA ###
+                response_job = requests.get(octoprint_url + 'job', headers=self.headers)
+                response_job.raise_for_status()
+                printer_job = response_job.json()
+
+                #Process the job data
+                job_error = printer_job.get('error')
+                job_state = printer_job.get('state')
+                progress = printer_job['progress'].get('completion')
+                print_time = printer_job['progress'].get('printTime')
+                print_time_left = printer_job['progress'].get('printTimeLeft')
+
+                self.updates['job_state'] = job_state
+                self.updates['job_error'] = job_error
+                self.updates['progress'] = progress
+                self.updates['print_time'] = print_time
+                self.updates['print_time_left'] = print_time_left
+
                 await asyncio.sleep(5)  # Adjust the interval as needed
             except Exception as e:
                 logging.info("Error connecting to OctoPrint: %s", e)
                 await asyncio.sleep(self.reconnect_interval)
+
 
     # async def printer_on_message(self, ws, message):
     #     data = json.loads(message)
@@ -262,7 +280,11 @@ class BatchPrinterConnect:
                 "message": None
             },
             'cancelled': None,
+            'job_state': None,
+            'job_error': None,
             'progress': None,
+            'print_time': None,
+            'print_time_left': None,
         }
 
     # def decode_updates(self, params):
