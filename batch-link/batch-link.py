@@ -54,25 +54,35 @@ class BatchPrinterConnect:
         while True:
             try:
                 logging.info("Trying to connect to websocket with URL: %s", self.remote_websocket_url)
-                async with websockets.connect(self.remote_websocket_url) as websocket:
+                async with websockets.connect(
+                    self.remote_websocket_url,
+                    ping_interval=20,
+                    ping_timeout=20 
+                ) as websocket:
                     self.remote_websocket = websocket
+                    logging.info(f"Successfully connected to the remote websocket")
                     await self.remote_on_open(websocket)
                     self.initialUpdatesValues()
                     async for message in websocket:
                         await self.remote_on_message(websocket, message)
                     
+            except websockets.exceptions.ConnectionClosedOK as e:
+                logging.warning(f"Websocket connection closed normally: {e} (code: {e.code})")
+            except websockets.exceptions.ConnectionClosedError as e:
+                logging.error(f"Websocket connection closed with error: {e} (code: {e.code})")
             except Exception as e:
                 logging.info("Error connecting to remote server: %s", e)
-                
-            logging.info("Attempting to reconnect in: %s", self.reconnect_interval)
+            
+            self.remote_websocket = None
+            logging.info("Attempting to reconnect in: %s seconds", self.reconnect_interval)
             await asyncio.sleep(self.reconnect_interval)
 
     async def remote_on_message(self, ws, message):
-        logging.info("Received from remote: %s", message)
+        logging.info(f"Received from remote")
         data = json.loads(message)
         if 'action' in data and 'content' in data:
             if data['action'] == 'print':
-                logging.info('Received print command for URL: %s', data['content']['url'])
+                logging.info(f"File name to print: {data['content']['file_name']}")
                 filename = data['content']['file_name']
                 url = data['content']['url']
                 self.print_file(filename, url)
@@ -86,10 +96,10 @@ class BatchPrinterConnect:
                 logging.info('Received resume print command for URL')
                 self.resume_print()
             elif data['action'] == 'cmd':
-                logging.info('Received command to execute: %s', data['content'])
+                logging.info('Received command to execute')
                 self.send_command(data['content'])  # New method to send G-code commands
             elif "move" in data['action']:
-                logging.info("ACTION: %s", data['action'])
+                logging.info("ACTION")
                 x, y, z = self.parse_move_command(data['action'])
                 self.move_extruder(x, y, z)
 
@@ -108,59 +118,62 @@ class BatchPrinterConnect:
     # ************* PRINTER *************** #
     async def printer_connection(self):
         octoprint_url = self.printer_url + "/api/"
+        logging.info(f"Executing printer_connection function")
         while True:
             try:
+                logging.info(f"Trying to get data from API")
                 #### PRINTER DATA ###
-                response_printer = requests.get(octoprint_url + 'printer', headers=self.headers)
+                response_printer = requests.get(
+                    octoprint_url + 'printer', 
+                    headers=self.headers, 
+                    timeout=10
+                )
                 response_printer.raise_for_status()
                 printer_info = response_printer.json()
 
                 # Process the printer state and temperature
-                state = printer_info['state'].get('text', 'unknown')
-                bed_temp = printer_info['temperature']['bed']['actual']
-                nozzle_temp = printer_info['temperature']['tool0']['actual']
-
-                logging.info("PRINTER BED TEMP, %s", bed_temp)
+                state = printer_info.get('state', {}).get('text', 'unknown')
+                bed_temp = printer_info.get('temperature', {}).get('bed', {}).get('actual', 0.0)
+                nozzle_temp = printer_info.get('temperature', {}).get('tool0', {}).get('actual', 0.0)
 
                 self.updates['status'] = state.lower()
-
-                
                 self.updates['bed_temperature'] = bed_temp
                 self.updates['nozzle_temperature'] = nozzle_temp
 
-
                 #### JOB DATA ###
-                response_job = requests.get(octoprint_url + 'job', headers=self.headers)
+                response_job = requests.get(
+                    octoprint_url + 'job', 
+                    headers=self.headers,
+                    timeout=10
+                )
                 response_job.raise_for_status()
                 printer_job = response_job.json()
 
-                #Process the job data
-                job_error = printer_job.get('error')
-                job_state = printer_job.get('state')
-                progress = printer_job['progress'].get('completion')
-                print_time = printer_job['progress'].get('printTime')
-                print_time_left = printer_job['progress'].get('printTimeLeft')
+                # Process the job data
+                job_error = printer_job.get('error', None)
+                job_state = printer_job.get('state', None)
+                progress = printer_job.get('progress', {}).get('completion', 0.0)
+                file_name = printer_job.get('job', {}).get('file', {}).get('name', None)
+                print_time = printer_job.get('progress', {}).get('printTime')
+                if print_time is None:
+                    print_time = 0.0
+                print_time_left = printer_job.get('progress', {}).get('printTimeLeft')
+                if print_time_left is None:
+                    print_time_left = 0.0
 
                 self.updates['job_state'] = job_state
                 self.updates['job_error'] = job_error
+                self.updates['file_name'] = file_name
                 self.updates['progress'] = progress
                 self.updates['print_time'] = print_time
                 self.updates['print_time_left'] = print_time_left
+                logging.info(f"Got data from API, printer status is: {state.lower()}")
 
-                await asyncio.sleep(5)  # Adjust the interval as needed
+                await asyncio.sleep(1)  # Adjust the interval as needed
             except Exception as e:
                 logging.info("Error connecting to OctoPrint: %s", e)
                 await asyncio.sleep(self.reconnect_interval)
 
-
-    # async def printer_on_message(self, ws, message):
-    #     data = json.loads(message)
-    #     method = data.get('method')
-    #     params = data.get('params')
-    #     if (method is not None) and (params is not None):
-    #         if (method == 'notify_status_update') and self.remote_websocket:
-    #             self.decode_updates(params)
-    #             return
 
     def send_command(self, command):
         try:
@@ -282,70 +295,23 @@ class BatchPrinterConnect:
             'cancelled': None,
             'job_state': None,
             'job_error': None,
+            'file_name': None,
             'progress': None,
             'print_time': None,
             'print_time_left': None,
         }
 
-    # def decode_updates(self, params):
-    #     logging.info("Decode updates")
-    #     for param in params:
-    #         try:
-    #             heater_bed = param.get('heater_bed')
-    #             self.updates['bed_temperature'] = heater_bed.get('temperature')
-    #         except Exception:
-    #             pass
-    #         try:
-    #             extruder = param.get('extruder')
-    #             self.updates['nozzle_temperature'] = extruder.get('temperature')
-    #         except Exception:
-    #             pass
-    #         try:
-    #             idle_state = param.get('idle_timeout')
-    #             self.updates['status'] = idle_state.get('state').lower()
-    #         except Exception:
-    #             pass
-    #         try:
-    #             print_stats = param.get('print_stats')
-    #             if print_stats:
-    #                 self.updates['print_stats'] = print_stats
-    #                 if print_stats.get('state') == 'cancelled':
-    #                     self.updates['cancelled'] = True
-    #                 virtual_sdcard = param.get('virtual_sdcard')
-    #                 self.updates['progress'] = virtual_sdcard.get('progress')
-    #         except Exception:
-    #             pass
-
-    async def get_job_data(self):
-        octoprint_url = self.printer_url + "/api/job"
-
-        while True:
-            try:
-                # Fetch the job data from OctoPrint
-                response = requests.get(octoprint_url, headers=self.headers)
-                response.raise_for_status()
-
-                job_info = response.json()
-
-                # Extract the completion percentage from the response
-                progress = job_info['progress']
-                completion = progress.get('completion', 0.0)  # Default to 0.0 if not available
-
-                # Update the progress in self.updates
-                self.updates['progress'] = completion
-                logging.info(f"Print completion: {completion}%")
-
-                # Sleep for the update interval before polling again
-                await asyncio.sleep(self.update_interval)
-                
-            except Exception as e:
-                logging.info(f"Error getting job data from OctoPrint: {e}")
-                await asyncio.sleep(self.reconnect_interval)
+        self.update_data_changed = False
 
     async def send_printer_update(self):
         while True:
+            logging.info(f"Executing sending printer updates function")
             try:
-                if any(value is not None for value in self.updates.values()):
+                if any(value is not None for value in self.updates.values()) and self.remote_websocket is not None:
+                    if self.update_data_changed:
+                        continue
+                    
+                    logging.info(f"Sending status within updates: {self.updates['status']}")
                     msg = {
                         'action': 'printer_update',
                         'content': self.updates
@@ -353,8 +319,15 @@ class BatchPrinterConnect:
                     serialised_json = json.dumps(msg)
                     self.updates['cancelled'] = None
                     await self.remote_websocket.send(serialised_json)
+                else:
+                    logging.warning(f"Either the websocket isnt initialised or a value is None")
+
+            except websockets.exceptions.ConnectionClosed as e:
+                logging.info("Websocket was closed while sending printer updates: %s", e)
+                self.remote_websocket = None
             except Exception as e:
                 logging.info("Error sending updates to remote server: %s", e)
+            
             await asyncio.sleep(self.update_interval)
 
 def main():
@@ -363,7 +336,6 @@ def main():
     loop.run_until_complete(asyncio.gather(
         communicator.remote_connection(),
         communicator.printer_connection(),
-        communicator.get_job_data(),
         communicator.send_printer_update()
     ))
     loop.close()
