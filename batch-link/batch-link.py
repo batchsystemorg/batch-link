@@ -8,6 +8,7 @@ import io
 import websockets
 import re
 import logging
+import time
 
 class BatchPrinterConnect:
     def __init__(self):
@@ -24,6 +25,7 @@ class BatchPrinterConnect:
         self.remote_websocket_url = self.config['connection_settings']['REMOTE_WS_URL']
         self.octo_api_key = self.config['printer_details']['API_KEY'].strip()
         self.printer_url = 'http://localhost'
+        self.uploading_file_progress = None
         self.uuid = self.config['printer_details']['UUID'].strip()
 
         self.headers = {
@@ -42,7 +44,7 @@ class BatchPrinterConnect:
 
         self.printer_connection_id = None
         self.initialUpdatesValues()
-        self.update_interval = 5
+        self.update_interval = 2
 
         self.remote_websocket = None
 
@@ -125,7 +127,27 @@ class BatchPrinterConnect:
         await ws.send(json.dumps(uuid_message))
         logging.info('Message sent: %s', uuid_message)
 
+
     # ************* PRINTER *************** #
+    def has_significant_difference(self, key, old_value, new_value):
+        thresholds = {
+            'bed_temperature': 0.5,
+            'nozzle_temperature': 0.5,
+            'bed_temperature_target': 0.5,
+            'nozzle_temperature_target': 0.5,
+            'progress': 0.5,  # example: only notify if progress changes by 1%
+        }
+
+        if key in thresholds:
+            threshold = thresholds[key]
+            try:
+                difference = abs(float(new_value) - float(old_value))
+                return difference >= threshold
+            except (ValueError, TypeError):
+                return old_value != new_value
+        else:
+            return old_value != new_value
+        
     async def printer_connection(self):
         octoprint_url = self.printer_url + "/api/"
         logging.info(f"Executing printer_connection function")
@@ -140,17 +162,12 @@ class BatchPrinterConnect:
                 response_printer.raise_for_status()
                 printer_info = response_printer.json()
 
-                state = printer_info.get('state', {}).get('text', 'unknown')
-                bed_temp = printer_info.get('temperature', {}).get('bed', {}).get('actual', 0.0)
-                nozzle_temp = printer_info.get('temperature', {}).get('tool0', {}).get('actual', 0.0)
-                bed_temperature_target = printer_info.get('temperature', {}).get('bed', {}).get('target', 0.0)
-                nozzle_temperature_target = printer_info.get('temperature', {}).get('tool0', {}).get('target', 0.0)
-
-                self.updates['status'] = state.lower()
-                self.updates['bed_temperature'] = bed_temp
-                self.updates['nozzle_temperature'] = nozzle_temp
-                self.updates['bed_temperature_target'] = bed_temperature_target
-                self.updates['nozzle_temperature_target'] = nozzle_temperature_target
+                temp_updates = {}
+                temp_updates['status'] = printer_info.get('state', {}).get('text', 'unknown').lower()
+                temp_updates['bed_temperature'] = printer_info.get('temperature', {}).get('bed', {}).get('actual', 0.0)
+                temp_updates['nozzle_temperature'] = printer_info.get('temperature', {}).get('tool0', {}).get('actual', 0.0)
+                temp_updates['bed_temperature_target'] = printer_info.get('temperature', {}).get('bed', {}).get('target', 0.0)
+                temp_updates['nozzle_temperature_target'] = printer_info.get('temperature', {}).get('tool0', {}).get('target', 0.0)
 
                 # Handle job info
                 response_job = requests.get(
@@ -161,14 +178,29 @@ class BatchPrinterConnect:
                 response_job.raise_for_status()
                 printer_job = response_job.json()
 
-                self.updates['job_state'] = printer_job.get('state', None)
-                self.updates['job_error'] = printer_job.get('error', None)
-                self.updates['file_name'] = printer_job.get('job', {}).get('file', {}).get('name', None)
-                self.updates['progress'] = printer_job.get('progress', {}).get('completion', 0.0)
-                self.updates['print_time'] = printer_job.get('progress', {}).get('printTime', 0.0)
-                self.updates['print_time_left'] = printer_job.get('progress', {}).get('printTimeLeft', 0.0)
+                temp_updates['job_state'] = printer_job.get('state', None)
+                temp_updates['job_error'] = printer_job.get('error', None)
+                temp_updates['file_name'] = printer_job.get('job', {}).get('file', {}).get('name', None)
+                temp_updates['progress'] = printer_job.get('progress', {}).get('completion', 0.0)
+                temp_updates['print_time'] = printer_job.get('progress', {}).get('printTime', 0.0)
+                temp_updates['print_time_left'] = printer_job.get('progress', {}).get('printTimeLeft', 0.0)
 
-                logging.info(f"Got data from API, printer status is: {state.lower()}")
+                # --- Check for significant changes ---
+                update_needed = False
+
+                for key, new_value in temp_updates.items():
+                    old_value = self.updates.get(key)
+
+                    if self.has_significant_difference(key, old_value, new_value):
+                        logging.info(f"Value for '{key}' changed significantly: {old_value} -> {new_value}")
+                        self.updates[key] = new_value
+                        update_needed = True
+
+                if update_needed:
+                    self.update_data_changed = True
+                    logging.info(f"Update data changed flagged as True")
+
+                logging.info(f"Got data from API, printer status is: {temp_updates['status']}")
 
             except requests.exceptions.HTTPError as e:
                 if e.response.status_code == 409:
@@ -198,24 +230,88 @@ class BatchPrinterConnect:
             logging.info("Command executed successfully: %s", command)
         except requests.exceptions.RequestException as e:
             logging.info("Error executing command: %s", e)
+
     def print_file(self, filename, url):
         headers = {
             'X-Api-Key': self.octo_api_key
         }
+        
         try:
-            logging.info('trying to upload file with url: %s', url)
-            file_response = requests.get(url)
-            file_response.raise_for_status()
-            file_stream = io.BytesIO(file_response.content)
-            file_stream.seek(0)
-            files = {'file': (filename, file_stream)}
-            data = {'print': 'true'}
-            response = requests.post(self.printer_url + '/api/files/local', files=files, data=data, headers=headers)
-            response.raise_for_status()
-            self.updates['cancelled'] = None
-            logging.info('File transfer successful: %s', response.text)
+            start_time = time.time()
+            logging.info('Starting file transfer process from %s', url)
+            
+            # Add a timeout and user-agent to improve download reliability
+            download_headers = {
+                'User-Agent': 'Mozilla/5.0 (compatible; PiPrinter/1.0)'
+            }
+            
+            # Use a session to maintain connection and improve download speed
+            self.uploading_file_progress = 0.0
+            with requests.Session() as session:
+                # Download the file with optimized parameters
+                with session.get(
+                    url, 
+                    stream=True, 
+                    headers=download_headers,
+                    timeout=60
+                ) as file_response:
+                    file_response.raise_for_status()
+                    
+                    # Use a BytesIO buffer to collect the data
+                    file_stream = io.BytesIO()
+                    
+                    # Track download progress
+                    total_size = int(file_response.headers.get('content-length', 0))
+                    bytes_downloaded = 0
+                    last_log_time = time.time()
+                    
+                    # Download with larger chunks to improve throughput
+                    for chunk in file_response.iter_content(chunk_size=1024 * 1024 * 4):  # 4MB chunks
+                        if chunk:
+                            file_stream.write(chunk)
+                            bytes_downloaded += len(chunk)
+
+                            if total_size > 0:
+                                self.uploading_file_progress = (bytes_downloaded / total_size) * 100
+                            
+                            # Log progress every 5 seconds
+                            current_time = time.time()
+                            if current_time - last_log_time > 5:
+                                speed = bytes_downloaded / (current_time - start_time) / 1024 / 1024
+                                logging.info(f'Downloaded {bytes_downloaded/(1024*1024):.1f}MB of {total_size/(1024*1024):.1f}MB ({speed:.2f} MB/s)')
+                                last_log_time = current_time
+                
+                download_time = time.time() - start_time
+                logging.info('Download completed in %.2f seconds', download_time)
+                
+                # Reset the file pointer to the beginning
+                file_stream.seek(0)
+                
+                # Upload to OctoPrint
+                upload_start = time.time()
+                files = {'file': (filename, file_stream)}
+                data = {'print': 'true'}
+                
+                response = session.post(
+                    self.printer_url + '/api/files/local', 
+                    files=files, 
+                    data=data, 
+                    headers=headers
+                )
+                
+                response.raise_for_status()
+                self.updates['cancelled'] = None
+                
+                upload_time = time.time() - upload_start
+                total_time = time.time() - start_time
+                self.uploading_file_progress = None
+                logging.info('Download: %.2fs, Upload: %.2fs, Total: %.2fs', 
+                            download_time, upload_time, total_time)
+                logging.info('File transfer successful: %s', response.text)
+                
         except requests.exceptions.RequestException as e:
-            logging.info('File transfer failed: %s', e)
+            self.uploading_file_progress = None
+            logging.error('File transfer failed: %s', e)
 
     def stop_print(self):
         try:
@@ -345,6 +441,7 @@ class BatchPrinterConnect:
             'progress': None,
             'print_time': None,
             'print_time_left': None,
+            'uploading_file_progress': None,
         }
 
         self.update_data_changed = False
@@ -354,7 +451,8 @@ class BatchPrinterConnect:
             logging.info(f"Executing sending printer updates function")
             try:
                 if any(value is not None for value in self.updates.values()) and self.remote_websocket is not None:
-                    if self.update_data_changed:
+                    if not self.update_data_changed and not self.uploading_file_progress:
+                        await asyncio.sleep(self.update_interval)
                         continue
                     
                     logging.info(f"Sending status within updates: {self.updates['status']}")
@@ -364,7 +462,9 @@ class BatchPrinterConnect:
                     }
                     serialised_json = json.dumps(msg)
                     self.updates['cancelled'] = None
+                    self.updates['uploading_file_progress'] = self.uploading_file_progress
                     await self.remote_websocket.send(serialised_json)
+                    self.update_data_changed = False
                 else:
                     logging.warning(f"Either the websocket isnt initialised or a value is None")
 
