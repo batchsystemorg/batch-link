@@ -88,7 +88,7 @@ class BatchPrinterConnect:
                 logging.info(f"File name to print: {data['content']['file_name']}")
                 filename = data['content']['file_name']
                 url = data['content']['url']
-                self.print_file(filename, url)
+                await asyncio.to_thread(self.print_file, filename, url)
             elif data['action'] == 'stop_print':
                 logging.info('Received stop print command for URL')
                 self.stop_print()
@@ -131,11 +131,9 @@ class BatchPrinterConnect:
     # ************* PRINTER *************** #
     def has_significant_difference(self, key, old_value, new_value):
         thresholds = {
-            'bed_temperature': 0.5,
-            'nozzle_temperature': 0.5,
-            'bed_temperature_target': 0.5,
-            'nozzle_temperature_target': 0.5,
-            'progress': 0.5,  # example: only notify if progress changes by 1%
+            'bed_temperature': 0.7,
+            'nozzle_temperature': 0.7,
+            'progress': 0.3,  # example: only notify if progress changes by 1%
         }
 
         if key in thresholds:
@@ -247,6 +245,7 @@ class BatchPrinterConnect:
             
             # Use a session to maintain connection and improve download speed
             self.uploading_file_progress = 0.0
+            self.update_data_changed = True
             with requests.Session() as session:
                 # Download the file with optimized parameters
                 with session.get(
@@ -273,6 +272,7 @@ class BatchPrinterConnect:
 
                             if total_size > 0:
                                 self.uploading_file_progress = (bytes_downloaded / total_size) * 100
+                                self.update_data_changed = True
                             
                             # Log progress every 5 seconds
                             current_time = time.time()
@@ -451,7 +451,7 @@ class BatchPrinterConnect:
             logging.info(f"Executing sending printer updates function")
             try:
                 if any(value is not None for value in self.updates.values()) and self.remote_websocket is not None:
-                    if not self.update_data_changed and not self.uploading_file_progress:
+                    if not self.update_data_changed:
                         await asyncio.sleep(self.update_interval)
                         continue
                     
