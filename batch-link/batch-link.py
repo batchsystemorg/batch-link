@@ -1,5 +1,7 @@
 
 import os
+from datetime import datetime
+import cv2
 import asyncio
 import configparser
 import requests
@@ -27,6 +29,21 @@ class BatchPrinterConnect:
         self.printer_url = 'http://localhost'
         self.uploading_file_progress = None
         self.uuid = self.config['printer_details']['UUID'].strip()
+        self.update_data_changed = True
+
+        ## ------- CAMERA ------- ##
+        self.current_recording_folder = None
+        try:
+            self.camera = cv2.VideoCapture(0)
+            if not self.camera.isOpened():
+                logging.warning("Failed to open camera - camera may not be connected")
+                self.camera = None
+        except Exception as e:
+            logging.warning(f"Could not initialize camera: {e}")
+            self.camera = None
+
+        self.last_status = None
+        self.last_gcode_command = None
 
         self.headers = {
             'X-Api-Key': self.octo_api_key
@@ -45,6 +62,7 @@ class BatchPrinterConnect:
         self.printer_connection_id = None
         self.initialUpdatesValues()
         self.update_interval = 2
+        self.alive_interval = 10
 
         self.remote_websocket = None
 
@@ -59,14 +77,17 @@ class BatchPrinterConnect:
                 async with websockets.connect(
                     self.remote_websocket_url,
                     ping_interval=20,
-                    ping_timeout=20 
+                    ping_timeout=20
                 ) as websocket:
                     self.remote_websocket = websocket
                     logging.info(f"Successfully connected to the remote websocket")
                     await self.remote_on_open(websocket)
                     self.initialUpdatesValues()
                     async for message in websocket:
-                        await self.remote_on_message(websocket, message)
+                        try:
+                            await self.remote_on_message(websocket, message)
+                        except Exception as e:
+                            logging.error(f"Error processing message: {e}")
                     
             except websockets.exceptions.ConnectionClosedOK as e:
                 logging.warning(f"Websocket connection closed normally: {e} (code: {e.code})")
@@ -103,7 +124,7 @@ class BatchPrinterConnect:
                 self.resume_print()
             elif data['action'] == 'cmd':
                 logging.info('Received command to execute')
-                self.send_command(data['content'])  # New method to send G-code commands
+                self.send_command(data['content'])
             elif data['action'] == 'heat_printer':
                 logging.info('Receive heating command')
                 self.set_temperatures(215, 60)
@@ -114,6 +135,9 @@ class BatchPrinterConnect:
                 logging.info("ACTION")
                 x, y, z = self.parse_move_command(data['action'])
                 self.move_extruder(x, y, z)
+            elif data['action'] == 'reboot_system':
+                logging.info('Received reboot command')
+                await asyncio.to_thread(self.reboot_system)
 
             else:
                 logging.info('Unknown Command')
@@ -126,6 +150,143 @@ class BatchPrinterConnect:
         }
         await ws.send(json.dumps(uuid_message))
         logging.info('Message sent: %s', uuid_message)
+
+    # **** REBOOT SYSTEM **** #
+    def reboot_system(self):
+        try:
+            logging.info("Executing system reboot command")
+            
+            self.status = 'Unresponsive'
+            self.updates['status'] = 'Unresponsive'
+            self.update_data_changed = True
+            
+            time.sleep(self.update_interval)
+            
+            result = os.system('sudo /sbin/shutdown -r now')
+            
+            if result == 0:
+                logging.info("Reboot command executed successfully")
+            else:
+                logging.error(f"Reboot command failed with exit code: {result}")
+                
+        except Exception as e:
+            logging.error(f"Failed to execute reboot: {e}")
+    # ************* CAMERA *************** #
+    def fetch_snapshot(self):
+        try:
+            response = requests.get(
+                f"{self.printer_url}:8080/?action=snapshot",
+                headers=self.headers,
+                stream=True
+            )
+            response.raise_for_status()
+            return response.content  # Returns the image as bytes
+        except Exception as e:
+            logging.error(f"Failed to fetch snapshot: {e}")
+            return None
+        
+    async def capture_images(self):
+        while True:
+            if self.updates['status'] == 'printing' and self.last_status != 'printing':
+                self.start_new_recording()
+            elif self.updates['status'] != 'printing' and self.last_status == 'printing':
+                self.current_recording_folder = None
+
+            if self.current_recording_folder:
+                # ret, frame = self.camera.read()
+                # logging.info(f"Ret: {ret} and frame: {frame} from camera read")
+                # if ret:
+                #     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                #     gcode_command = self.get_current_gcode_command()
+                #     if gcode_command:
+                #         filename = f"{gcode_command}_{timestamp}.jpg"
+                #     else:
+                #         filename = f"{timestamp}.jpg"
+                #     image_path = os.path.join(self.current_recording_folder, filename)
+                #     cv2.imwrite(image_path, frame)
+                #     logging.info(f"Saved image: {image_path}")
+                snapshot = self.fetch_snapshot()
+                if snapshot:
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    gcode_command = self.get_current_gcode_command()
+                    if gcode_command:
+                        filename = f"{gcode_command}_{timestamp}.jpg"
+                    else:
+                        filename = f"{timestamp}.jpg"
+                    image_path = os.path.join(self.current_recording_folder, filename)
+                    with open(image_path, "wb") as image_file:
+                        image_file.write(snapshot)
+                    logging.info(f"Saved image: {image_path}")
+
+            self.last_status = self.updates['status']
+            await asyncio.sleep(2)  # Capture images every second
+
+    def start_new_recording(self):
+        # Create a new folder for the recording
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.current_recording_folder = os.path.expanduser(f"~/printer-image-data/{timestamp}")
+        os.makedirs(self.current_recording_folder, exist_ok=True)
+        logging.info(f"Started new recording in folder: {self.current_recording_folder}")
+
+    async def listen_to_printer_push_api(self):
+        ws_url = f"ws://localhost/sockjs/websocket"  # Or wss if HTTPS
+
+        while True:
+            try:
+                async with websockets.connect(ws_url, ping_interval=20, ping_timeout=20) as ws:
+                    logging.info(f"Connected to OctoPrint Push API at {ws_url}")
+
+                    # Step 1: Authenticate
+                    auth_payload = json.dumps({
+                        "auth": self.octo_api_key
+                    })
+                    await ws.send(auth_payload)
+                    logging.info(f"Sent auth payload.")
+
+                    # Step 2: Subscribe to Gcode events
+                    subscribe_payload = json.dumps({
+                        "command": "subscribe",
+                        "data": {
+                            "topics": ["event:GcodeSending", "event:GcodeSent"]
+                        }
+                    })
+                    await ws.send(subscribe_payload)
+                    logging.info(f"Subscribed to Gcode events.")
+
+                    # Step 3: Listen for messages
+                    async for message in ws:
+                        logging.info(f"[PUSH-API] Raw message: {message}")
+
+                        try:
+                            data = json.loads(message)
+
+                            # Event-based system
+                            if data.get("type") == "event":
+                                event_name = data.get("name")
+                                payload = data.get("payload", {})
+
+                                if event_name in ["GcodeSending", "GcodeSent"]:
+                                    cmd = payload.get("cmd")
+                                    if cmd:
+                                        self.last_gcode_command = cmd
+                                        logging.info(f"[PUSH-API] Last G-code command ({event_name}): {cmd}")
+
+                        except json.JSONDecodeError as e:
+                            logging.error(f"JSON decode error: {e}")
+
+            except Exception as e:
+                logging.error(f"[PUSH-API] Connection error: {e}")
+
+            logging.info("Reconnecting to Push API in 5 seconds...")
+            await asyncio.sleep(5)
+
+    
+    def get_current_gcode_command(self):
+        if self.last_gcode_command:
+            return self.last_gcode_command
+        else:
+            logging.warning("No recent G-code command found. Returning 'unknown'.")
+            return 'unknown'
 
 
     # ************* PRINTER *************** #
@@ -204,6 +365,7 @@ class BatchPrinterConnect:
                 if e.response.status_code == 409:
                     logging.warning("409 Conflict Error: Printer is busy or disconnected. Retrying in 10 seconds.")
                     self.updates['status'] = 'error'
+                    self.update_data_changed = True
                     await asyncio.sleep(10)
                     continue  # Skip this iteration but keep the loop running
                 else:
@@ -332,10 +494,13 @@ class BatchPrinterConnect:
             response = requests.post(
                 f"{self.printer_url}/api/connection",
                 headers=self.headers,
-                json={'command': 'connect'}
+                json={
+                    "command": "connect",
+                    "port": "AUTO",
+                }
             )
             if response:
-                logging.info('Successfully stopped print')
+                logging.info(f"Response from reconnecting {response}")
         except Exception as e:
             logging.info('Stopping print failed: %s', e)
 
@@ -444,18 +609,20 @@ class BatchPrinterConnect:
             'uploading_file_progress': None,
         }
 
-        self.update_data_changed = False
+        self.update_data_changed = True
 
     async def send_printer_update(self):
+        last_sent_time = time.time()
         while True:
-            logging.info(f"Executing sending printer updates function")
+            logging.info(f"[UPDATE] Called")
             try:
+                time_since_last = time.time() - last_sent_time
                 if any(value is not None for value in self.updates.values()) and self.remote_websocket is not None:
-                    if not self.update_data_changed:
+                    if not self.update_data_changed and time_since_last < 120:
                         await asyncio.sleep(self.update_interval)
                         continue
                     
-                    logging.info(f"Sending status within updates: {self.updates['status']}")
+                    logging.info(f"[UPDATE] Sending update, printer status: {self.updates['status']}")
                     msg = {
                         'action': 'printer_update',
                         'content': self.updates
@@ -464,17 +631,43 @@ class BatchPrinterConnect:
                     self.updates['cancelled'] = None
                     self.updates['uploading_file_progress'] = self.uploading_file_progress
                     await self.remote_websocket.send(serialised_json)
+
                     self.update_data_changed = False
+                    last_sent_time = time.time()
                 else:
-                    logging.warning(f"Either the websocket isnt initialised or a value is None")
+                    logging.warning(f"[UPDATE] Either the websocket isnt initialised or a value is None")
 
             except websockets.exceptions.ConnectionClosed as e:
-                logging.info("Websocket was closed while sending printer updates: %s", e)
+                logging.info(f"[UPDATE] Websocket error, connection closed: {e}")
                 self.remote_websocket = None
             except Exception as e:
-                logging.info("Error sending updates to remote server: %s", e)
+                logging.info(f"[PRINTER-UPDATE] Error: {e}")
             
             await asyncio.sleep(self.update_interval)
+
+    async def send_printer_alive(self):
+        while True:
+            logging.info(f"[ALIVE] Called")
+            try:
+                if self.remote_websocket is not None:
+                    msg = {
+                            'action': 'printer_alive',
+                            'content': {} 
+                    }
+                    serialised_json = json.dumps(msg)
+                    logging.info(f"[ALIVE] Sending")
+                    await self.remote_websocket.send(serialised_json)
+                else:
+                    logging.warning(f"[ALIVE] Either the websocket isnt initialised or a value is None")
+
+            except websockets.exceptions.ConnectionClosed as e:
+                logging.info(f"[ALIVE] Websocket error, connection closed: {e}")
+                self.remote_websocket = None
+            except Exception as e:
+                logging.info(f"[ALIVE] Error: {e}")
+
+            await asyncio.sleep(self.alive_interval)
+
 
 def main():
     communicator = BatchPrinterConnect()
@@ -483,6 +676,9 @@ def main():
         communicator.remote_connection(),
         communicator.printer_connection(),
         communicator.send_printer_update(),
+        communicator.send_printer_alive(),
+        # communicator.capture_images(),
+        # communicator.listen_to_printer_push_api(),
         return_exceptions=True
     )
     loop.run_until_complete(tasks)
