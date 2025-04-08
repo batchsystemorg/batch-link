@@ -294,7 +294,6 @@ class BatchPrinterConnect:
         thresholds = {
             'bed_temperature': 0.7,
             'nozzle_temperature': 0.7,
-            'progress': 0.3,  # example: only notify if progress changes by 1%
         }
 
         if key in thresholds:
