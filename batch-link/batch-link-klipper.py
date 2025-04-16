@@ -104,45 +104,43 @@ class BatchPrinterConnect:
         data = json.loads(message)
         logging.info(f"Received from remote")
         logging.info(data)
-        try:
-            if 'action' in data and 'content' in data:
-                if data['action'] == 'print':
-                    logging.info(f"File name to print: {data['content']['file_name']}")
-                    filename = data['content']['file_name']
-                    url = data['content']['url']
-                    await asyncio.to_thread(self.print_file, filename, url)
-                elif data['action'] == 'stop_print':
-                    logging.info('Received stop print command for URL')
-                    self.stop_print()
-                elif data['action'] == 'connect':
-                    logging.info('Received reconnect command for URL')
-                    self.reconnect_printer()
-                elif data['action'] == 'pause_print':
-                    logging.info('Received pause print command for URL')
-                    self.pause_print()
-                elif data['action'] == 'resume_print':
-                    logging.info('Received resume print command for URL')
-                    self.resume_print()
-                elif data['action'] == 'cmd':
-                    logging.info('Received command to execute')
-                    self.send_command(data['content'])
-                elif data['action'] == 'heat_printer':
-                    logging.info('Receive heating command')
-                    self.set_temperatures(215, 60)
-                elif data['action'] == 'cool_printer':
-                    logging.info('Receive heating command')
-                    self.set_temperatures(0, 0)
-                elif "move" in data['action']:
-                    logging.info("ACTION")
-                    x, y, z = self.parse_move_command(data['action'])
-                    self.move_extruder(x, y, z)
-                elif data['action'] == 'reboot_system':
-                    logging.info('Received reboot command')
-                    await asyncio.to_thread(self.reboot_system)
-                else:
-                    logging.info('Unknown Command')
-        except Exception as e:
-            logging.warning(f"Error decoding data {data}: {e}")
+        if 'action' in data and 'content' in data:
+            if data['action'] == 'print':
+                logging.info(f"File name to print: {data['content']['file_name']}")
+                filename = data['content']['file_name']
+                url = data['content']['url']
+                await asyncio.to_thread(self.print_file, filename, url)
+            elif data['action'] == 'stop_print':
+                logging.info('Received stop print command for URL')
+                self.stop_print()
+            elif data['action'] == 'connect':
+                logging.info('Received reconnect command for URL')
+                self.reconnect_printer()
+            elif data['action'] == 'pause_print':
+                logging.info('Received pause print command for URL')
+                self.pause_print()
+            elif data['action'] == 'resume_print':
+                logging.info('Received resume print command for URL')
+                self.resume_print()
+            elif data['action'] == 'cmd':
+                logging.info('Received command to execute')
+                self.send_command(data['content'])
+            elif data['action'] == 'heat_printer':
+                logging.info('Receive heating command')
+                self.set_temperatures(215, 60)
+            elif data['action'] == 'cool_printer':
+                logging.info('Receive heating command')
+                self.set_temperatures(0, 0)
+            elif "move" in data['action']:
+                logging.info("ACTION")
+                x, y, z = self.parse_move_command(data['action'])
+                self.move_extruder(x, y, z)
+            elif data['action'] == 'reboot_system':
+                logging.info('Received reboot command')
+                await asyncio.to_thread(self.reboot_system)
+
+            else:
+                logging.info('Unknown Command')
 
     async def remote_on_open(self, ws):
         logging.info("Remote connection opened")
