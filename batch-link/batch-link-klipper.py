@@ -15,8 +15,8 @@ import time
 class BatchPrinterConnect:
     def __init__(self):
         logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
-        username = os.environ.get('USER')
-        self.config_file_path = f"/home/{username}/.octoprint/batch-link.cfg"
+        self.username = os.environ.get('USER')
+        self.config_file_path = f"/home/{self.username}/moonraker/batch-link.cfg"
         self.config = configparser.ConfigParser()
         self.config.read(self.config_file_path)
 
@@ -25,8 +25,14 @@ class BatchPrinterConnect:
         
         self.reconnect_interval = int(self.config['connection_settings']['RECONNECT_INTERVAL'])
         self.remote_websocket_url = self.config['connection_settings']['REMOTE_WS_URL']
-        self.octo_api_key = self.config['printer_details']['API_KEY'].strip()
-        self.printer_url = 'http://localhost'
+        
+        self.moonraker_port = int(self.config.get('printer_details', 'MOONRAKER_PORT', fallback='7125'))
+        self.printer_url = f'http://localhost:{self.moonraker_port}'
+        
+        if not self.is_moonraker_running():
+            logging.error("Moonraker is not running at %s. Please check your installation.", self.printer_url)
+            raise ConnectionError("Cannot connect to Moonraker")
+        
         self.uploading_file_progress = None
         self.uuid = self.config['printer_details']['UUID'].strip()
         self.update_data_changed = True
@@ -45,16 +51,13 @@ class BatchPrinterConnect:
         self.last_status = None
         self.last_gcode_command = None
 
-        self.headers = {
-            'X-Api-Key': self.octo_api_key
-        }
-
+         # Get initial printer status
         try:
-            response = requests.get(self.printer_url + '/api/printer', headers=self.headers)
+            response = requests.get(f"{self.printer_url}/printer/info")
             response.raise_for_status()
             printer_info = response.json()
-            logging.info("printer_info, %s", printer_info)
-            self.status = printer_info['state'].get('text', 'unknown')  # Get the printer status (e.g., "Operational")
+            logging.info("printer_info: %s", printer_info)
+            self.status = printer_info.get('result', {}).get('state', 'unknown')
         except Exception as e:
             logging.info('Something went wrong trying to get the initial state: %s', e)
             self.status = 'error'
@@ -68,6 +71,16 @@ class BatchPrinterConnect:
 
         if not all([self.remote_websocket_url, self.printer_url, self.uuid]):
             raise ValueError("One or more configuration parameters are missing.")
+        
+    def is_moonraker_running(self):
+        try:
+            response = requests.get(f"{self.printer_url}/server/info", timeout=5)
+            if response.status_code == 200:
+                logging.info("Moonraker is running at %s", self.printer_url)
+                return True
+            return False
+        except requests.exceptions.RequestException:
+            return False
 
     # ************* REMOTE *************** #
     async def remote_connection(self):
@@ -307,41 +320,68 @@ class BatchPrinterConnect:
             return old_value != new_value
         
     async def printer_connection(self):
-        octoprint_url = self.printer_url + "/api/"
-        logging.info(f"Executing printer_connection function")
         while True:
             try:
-                logging.info(f"Trying to get data from API")
-                response_printer = requests.get(
-                    octoprint_url + 'printer', 
-                    headers=self.headers, 
-                    timeout=10
-                )
-                response_printer.raise_for_status()
-                printer_info = response_printer.json()
-
+                # Get printer status - this is the key difference for Moonraker
+                response = requests.get(f"{self.printer_url}/printer/objects/query?extruder&heater_bed&print_stats&virtual_sdcard")
+                response.raise_for_status()
+                printer_data = response.json()
+                
+                # Extract relevant data from the response
+                result = printer_data.get('result', {})
+                status = result.get('status', {})
+                
+                # Update the temperature and status information
                 temp_updates = {}
-                temp_updates['status'] = printer_info.get('state', {}).get('text', 'unknown').lower()
-                temp_updates['bed_temperature'] = printer_info.get('temperature', {}).get('bed', {}).get('actual', 0.0)
-                temp_updates['nozzle_temperature'] = printer_info.get('temperature', {}).get('tool0', {}).get('actual', 0.0)
-                temp_updates['bed_temperature_target'] = printer_info.get('temperature', {}).get('bed', {}).get('target', 0.0)
-                temp_updates['nozzle_temperature_target'] = printer_info.get('temperature', {}).get('tool0', {}).get('target', 0.0)
-
-                # Handle job info
-                response_job = requests.get(
-                    octoprint_url + 'job', 
-                    headers=self.headers,
-                    timeout=10
-                )
-                response_job.raise_for_status()
-                printer_job = response_job.json()
-
-                temp_updates['job_state'] = printer_job.get('state', None)
-                temp_updates['job_error'] = printer_job.get('error', None)
-                temp_updates['file_name'] = printer_job.get('job', {}).get('file', {}).get('name', None)
-                temp_updates['progress'] = printer_job.get('progress', {}).get('completion', 0.0)
-                temp_updates['print_time'] = printer_job.get('progress', {}).get('printTime', 0.0)
-                temp_updates['print_time_left'] = printer_job.get('progress', {}).get('printTimeLeft', 0.0)
+                
+                # Get extruder temperature
+                extruder = status.get('extruder', {})
+                temp_updates['nozzle_temperature'] = extruder.get('temperature', 0.0)
+                temp_updates['nozzle_temperature_target'] = extruder.get('target', 0.0)
+                
+                # Get bed temperature
+                heater_bed = status.get('heater_bed', {})
+                temp_updates['bed_temperature'] = heater_bed.get('temperature', 0.0)
+                temp_updates['bed_temperature_target'] = heater_bed.get('target', 0.0)
+                
+                # Get print status
+                print_stats = status.get('print_stats', {})
+                virtual_sdcard = status.get('virtual_sdcard', {})
+                
+                # Map Klipper states to equivalent OctoPrint states
+                klipper_state = print_stats.get('state', '').lower()
+                
+                # Convert Klipper state to something similar to OctoPrint's states
+                if klipper_state == 'printing':
+                    temp_updates['status'] = 'printing'
+                    temp_updates['job_state'] = 'Printing'
+                elif klipper_state == 'paused':
+                    temp_updates['status'] = 'paused'
+                    temp_updates['job_state'] = 'Paused'
+                elif klipper_state == 'complete':
+                    temp_updates['status'] = 'complete'
+                    temp_updates['job_state'] = 'Complete'
+                elif klipper_state == 'standby':
+                    temp_updates['status'] = 'operational'
+                    temp_updates['job_state'] = 'Operational'
+                elif klipper_state == 'error':
+                    temp_updates['status'] = 'error'
+                    temp_updates['job_state'] = 'Error'
+                else:
+                    temp_updates['status'] = klipper_state
+                    temp_updates['job_state'] = klipper_state.capitalize()
+                
+                # Get job details
+                temp_updates['file_name'] = print_stats.get('filename')
+                temp_updates['progress'] = virtual_sdcard.get('progress', 0.0) * 100
+                temp_updates['print_time'] = print_stats.get('print_duration', 0.0)
+                
+                # Calculate time left based on progress
+                if temp_updates['progress'] > 0 and temp_updates['print_time'] > 0:
+                    time_left = (temp_updates['print_time'] / temp_updates['progress']) * (100 - temp_updates['progress'])
+                    temp_updates['print_time_left'] = time_left
+                else:
+                    temp_updates['print_time_left'] = 0.0
 
                 # --- Check for significant changes ---
                 update_needed = False
@@ -370,7 +410,9 @@ class BatchPrinterConnect:
                 else:
                     logging.error(f"HTTP Error: {e}")
             except Exception as e:
-                logging.error("Error connecting to OctoPrint: %s", e)
+                self.updates['status'] = 'error'
+                self.update_data_changed = True
+                logging.error("Error connecting to Moonraker: %s", e)
 
             await asyncio.sleep(self.reconnect_interval)  # Keep retrying
 
@@ -378,23 +420,16 @@ class BatchPrinterConnect:
     def send_command(self, command):
         try:
             payload = {
-                "command": command  # Send the command directly to OctoPrint
+                "script": command
             }
-            response = requests.post(
-                f"{self.printer_url}/api/printer/command",
-                headers=self.headers,
-                json=payload
-            )
+            url = f"{self.printer_url}/printer/gcode/script"
+            response = requests.post(url, json=payload)
             response.raise_for_status()
             logging.info("Command executed successfully: %s", command)
         except requests.exceptions.RequestException as e:
-            logging.info("Error executing command: %s", e)
+            logging.error("Error executing command: %s", e)
 
     def print_file(self, filename, url):
-        headers = {
-            'X-Api-Key': self.octo_api_key
-        }
-        
         try:
             start_time = time.time()
             logging.info('Starting file transfer process from %s', url)
@@ -448,18 +483,32 @@ class BatchPrinterConnect:
                 # Reset the file pointer to the beginning
                 file_stream.seek(0)
                 
-                # Upload to OctoPrint
+                # Upload
                 upload_start = time.time()
-                files = {'file': (filename, file_stream)}
-                data = {'print': 'true'}
+                filename_safe = os.path.basename(filename)
+                gcodes_dir = f"/home/{self.username}/printer_data/gcodes"
+                if not os.path.exists(gcodes_dir):
+                    # Try alternative locations
+                    if os.path.exists(f"/home/{self.username}/klipper_config/gcodes"):
+                        gcodes_dir = f"/home/{self.username}/klipper_config/gcodes"
+                    else:
+                        # Create the directory
+                        os.makedirs(gcodes_dir, exist_ok=True)
                 
-                response = session.post(
-                    self.printer_url + '/api/files/local', 
-                    files=files, 
-                    data=data, 
-                    headers=headers
-                )
+                file_path = os.path.join(gcodes_dir, filename_safe)
+                with open(file_path, 'wb') as f:
+                    f.write(file_stream.getvalue())
                 
+                logging.info(f'File saved to {file_path}')
+                
+                # Start printing the file with Moonraker API
+                print_url = f"{self.printer_url}/printer/print/start"
+                print_payload = {
+                    "filename": filename_safe
+                }
+                response = requests.post(print_url, json=print_payload)
+                response.raise_for_status()
+
                 response.raise_for_status()
                 self.updates['cancelled'] = None
                 
@@ -477,112 +526,81 @@ class BatchPrinterConnect:
     def stop_print(self):
         try:
             logging.info('Stopping print')
-            response = requests.post(
-                f"{self.printer_url}/api/job",
-                headers=self.headers,
-                json={'command': 'cancel'}
-            )
-            if response:
-                logging.info('Successfully stopped print')
+            url = f"{self.printer_url}/printer/print/cancel"
+            response = requests.post(url)
+            response.raise_for_status()
+            logging.info('Successfully stopped print')
         except Exception as e:
-            logging.info('Stopping print failed: %s', e)
+            logging.error('Stopping print failed: %s', e)
 
     def reconnect_printer(self):
         try:
-            logging.info('Reconnecting')
-            response = requests.post(
-                f"{self.printer_url}/api/connection",
-                headers=self.headers,
-                json={
-                    "command": "connect",
-                    "port": "AUTO",
-                }
-            )
-            if response:
-                logging.info(f"Response from reconnecting {response}")
+            logging.info('Reconnecting printer')
+            url = f"{self.printer_url}/printer/restart"
+            response = requests.post(url)
+            response.raise_for_status()
+            logging.info('Successfully sent reconnect command')
         except Exception as e:
-            logging.info('Stopping print failed: %s', e)
+            logging.error('Reconnect failed: %s', e)
 
     def pause_print(self):
         try:
             logging.info('Pausing Print')
-            response = requests.post(
-                f"{self.printer_url}/api/job",
-                headers=self.headers,
-                json={'command': 'pause', 'action': 'pause'}
-            )
-            if response:
-                logging.info('Successfully paused print')
-        except requests.exceptions.RequestException as e:
-            logging.info('Pausing print failed: %s', e)
+            url = f"{self.printer_url}/printer/print/pause"
+            response = requests.post(url)
+            response.raise_for_status()
+            logging.info('Successfully paused print')
+        except Exception as e:
+            logging.error('Pausing print failed: %s', e)
 
     def resume_print(self):
         try:
             logging.info('Resuming Print')
-            response = requests.post(
-                f"{self.printer_url}/api/job",
-                headers=self.headers,
-                json={'command': 'pause', 'action': 'resume'}
-            )
-            if response:
-                logging.info('Successfully resumed print')
-        except requests.exceptions.RequestException as e:
-            logging.info('Resuming print failed: %s', e)
+            url = f"{self.printer_url}/printer/print/resume"
+            response = requests.post(url)
+            response.raise_for_status()
+            logging.info('Successfully resumed print')
+        except Exception as e:
+            logging.error('Resuming print failed: %s', e)
 
-    def parse_move_command(self, action_string):
-        # Use a regex to extract x, y, and z values
-        match = re.findall(r'[xyz]:-?\d+', action_string)
-        move_values = {}
-        
-        # Iterate through the matches and assign the values to x, y, z
-        for m in match:
-            axis, value = m.split(":")
-            move_values[axis] = int(value)  # Convert value to int (or float if needed)
-        
-        # Now you have the x, y, and z values as a dictionary
-        x = move_values.get('x', 0)  # Default to 0 if not provided
-        y = move_values.get('y', 0)  # Default to 0 if not provided
-        z = move_values.get('z', 0)  # Default to 0 if not provided
-        
-        return x, y, z
 
     def move_extruder(self, x, y, z):
-        payload = {
-            "command": "jog",
-            "x": x,        # Move 10mm in the X direction
-            "y": y,         # Move 5mm in the Y direction
-            "z": z,        # Move -2mm in the Z direction
-            "speed": 1000,  # Speed of the movement (optional)
-        }
-
-        # Send the command to move the printhead
-        response = requests.post(
-            f"{self.printer_url}/api/printer/printhead",
-            headers=self.headers,
-            json=payload
-        )
+        try:
+            gcode_command = f"G91\nG1 X{x} Y{y} Z{z} F1000\nG90"
+            payload = {
+                "script": gcode_command
+            }
+            url = f"{self.printer_url}/printer/gcode/script"
+            response = requests.post(url, json=payload)
+            response.raise_for_status()
+            logging.info(f"Successfully moved extruder X:{x} Y:{y} Z:{z}")
+        except Exception as e:
+            logging.error(f"Failed to move extruder: {e}")
 
     def set_temperatures(self, tool_temp: int, bed_temp: int):
         try:
-            tool_payload = {"command": "target", "targets": {"tool0": tool_temp}}
-            tool_response = requests.post(
-                f"{self.printer_url}/api/printer/tool",
-                headers=self.headers,
-                json=tool_payload
-            )
-            tool_response.raise_for_status()
+            url = f"{self.printer_url}/printer/gcode/script"
+
+            # Set extruder temperature
+            extruder_command = f"M104 S{tool_temp}"
+            extruder_payload = {
+                "script": extruder_command
+            }
+            response = requests.post(url, json=extruder_payload)
+            response.raise_for_status()
             logging.info(f"Successfully set tool temperature to {tool_temp}°C")
 
-            bed_payload = {"command": "target", "target": bed_temp}
-            bed_response = requests.post(
-                f"{self.printer_url}/api/printer/bed",
-                headers=self.headers,
-                json=bed_payload
-            )
-            bed_response.raise_for_status()
+            # Set bed temperature
+            bed_command = f"M140 S{bed_temp}"
+            bed_payload = {
+                "script": bed_command
+            }
+            response = requests.post(url, json=bed_payload)
+            response.raise_for_status()
             logging.info(f"Successfully set bed temperature to {bed_temp}°C")
-        except requests.exceptions.RequestException as e:
+        except Exception as e:
             logging.error(f"Failed to set temperatures: {e}")
+
 
     def initialUpdatesValues(self):
         self.updates = {

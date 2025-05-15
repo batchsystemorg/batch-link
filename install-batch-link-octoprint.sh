@@ -25,7 +25,7 @@ copy_files() {
       echo 'Connected to Raspberry Pi.'; \
       cd /home/$username/batch-link; \
       echo 'Initiate install script on Pi'; \
-      bash install-on-pi.sh;"
+      bash install-on-pi-octoprint.sh;"
 
 }
 
@@ -68,7 +68,7 @@ main() {
                                             ..                                            
                                                                                           
                                                                                           
-                                   BATCH LINK INSTALLER                                                     
+                                BATCH LINK OCTOPRINT INSTALLER                                                     
                                                                                           
                                                                                           
                                                                                       
