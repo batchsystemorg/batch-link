@@ -313,7 +313,7 @@ class BatchPrinterConnect:
         logging.info(f"Executing printer_connection function")
         while True:
             try:
-                logging.info(f"Trying to get data from API")
+                logging.info(f"[PRINTER] Pull data")
                 response_printer = requests.get(
                     octoprint_url + 'printer', 
                     headers=self.headers, 
@@ -352,20 +352,20 @@ class BatchPrinterConnect:
                     old_value = self.updates.get(key)
 
                     if self.has_significant_difference(key, old_value, new_value):
-                        logging.info(f"Value for '{key}' changed significantly: {old_value} -> {new_value}")
+                        # logging.info(f"Value for '{key}' changed significantly: {old_value} -> {new_value}")
                         self.updates[key] = new_value
                         update_needed = True
 
                 if update_needed:
                     self.update_data_changed = True
-                    logging.info(f"Update data changed flagged as True")
 
-                logging.info(f"Got data from API, printer status is: {temp_updates['status']}")
+                logging.info(f"[PRINTER] Data received: {temp_updates['status']}")
 
             except requests.exceptions.HTTPError as e:
                 if e.response.status_code == 409:
                     logging.warning("409 Conflict Error: Printer is busy or disconnected. Retrying in 10 seconds.")
                     self.updates['status'] = 'error'
+                    self.reconnect_printer()
                     self.update_data_changed = True
                     await asyncio.sleep(10)
                     continue  # Skip this iteration but keep the loop running
@@ -379,6 +379,8 @@ class BatchPrinterConnect:
 
     def send_command(self, command):
         try:
+            # if command.lower() == 'reset':
+                
             payload = {
                 "command": command  # Send the command directly to OctoPrint
             }
@@ -389,6 +391,7 @@ class BatchPrinterConnect:
             )
             response.raise_for_status()
             logging.info("Command executed successfully: %s", command)
+            asyncio.create_task(self.send_printer_ready())
         except requests.exceptions.RequestException as e:
             logging.info("Error executing command: %s", e)
 
@@ -484,8 +487,9 @@ class BatchPrinterConnect:
                 headers=self.headers,
                 json={'command': 'cancel'}
             )
-            if response:
-                logging.info('Successfully stopped print')
+            response.raise_for_status()
+            logging.info('Successfully stopped print')
+            asyncio.create_task(self.send_printer_ready())
         except Exception as e:
             logging.info('Stopping print failed: %s', e)
 
@@ -563,6 +567,10 @@ class BatchPrinterConnect:
             headers=self.headers,
             json=payload
         )
+        
+        response.raise_for_status()
+        logging.info("Successfully executed move Extruder command")
+        asyncio.create_task(self.send_printer_ready())
 
     def set_temperatures(self, tool_temp: int, bed_temp: int):
         try:
@@ -583,6 +591,7 @@ class BatchPrinterConnect:
             )
             bed_response.raise_for_status()
             logging.info(f"Successfully set bed temperature to {bed_temp}°C")
+            asyncio.create_task(self.send_printer_ready())
         except requests.exceptions.RequestException as e:
             logging.error(f"Failed to set temperatures: {e}")
 
@@ -668,6 +677,21 @@ class BatchPrinterConnect:
                 logging.info(f"[ALIVE] Error: {e}")
 
             await asyncio.sleep(self.alive_interval)
+    
+    async def send_printer_ready(self):
+        if self.remote_websocket is not None:
+            try:
+                msg = {
+                    'action': 'printer_ready',
+                    'content': {}
+                }
+                await self.remote_websocket.send(json.dumps(msg))
+                logging.info('Sent printer_ready update')
+            except Exception as e:
+                logging.warning(f"Failed to send printer_ready: {e}")
+        else:
+            logging.warning("WebSocket not connected — cannot send printer_ready")
+
 
 
 def main():

@@ -25,7 +25,12 @@ UUID=$(cat /proc/sys/kernel/random/uuid)
 sudo sed -i "s|:::uuid|$UUID|g" "$config_file"
 
 echo -e "Now installing python frameworks and we done."
-pip install -q -r requirements.txt
+sudo apt-get update
+sudo apt-get install python3-venv
+sudo apt-get install -y libopenblas0 libopenblas-dev
+python -m venv /home/$username/batch-link/venv
+source /home/$username/batch-link/venv/bin/activate
+pip install -r requirements.txt
 
 sudo systemctl daemon-reload
 sudo systemctl enable batch-link.service

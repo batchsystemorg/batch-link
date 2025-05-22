@@ -12,12 +12,12 @@ username=`whoami`
 
 echo -e "\033[0mAnd we need the password one last time ⊂(◉‿◉)つ"
 
-mv batch-link.cfg /home/$username/moonraker
-sudo mv /home/$username/batch-link/batch-link.service /etc/systemd/system/
+mv batch-link-klipper.cfg /home/$username/moonraker
+sudo mv /home/$username/batch-link/batch-link-klipper.service /etc/systemd/system/
 
 echo -e "\033[0m "
 
-service_file=/etc/systemd/system/batch-link.service
+service_file=/etc/systemd/system/batch-link-klipper.service
 sudo sed -i "s|:::username|$username|g" "$service_file"
 
 config_file=/home/$username/moonraker/batch-link-klipper.cfg
@@ -25,12 +25,17 @@ UUID=$(cat /proc/sys/kernel/random/uuid)
 sudo sed -i "s|:::uuid|$UUID|g" "$config_file"
 
 echo -e "Now installing python frameworks and we done."
-pip install -q -r requirements.txt
+sudo apt-get update
+sudo apt-get install python3-venv
+sudo apt-get install -y libopenblas0 libopenblas-dev
+python -m venv /home/$username/batch-link/venv
+source /home/$username/batch-link/venv/bin/activate
+pip install -r requirements.txt
 
 sudo systemctl daemon-reload
-sudo systemctl enable batch-link.service
-sudo systemctl start batch-link.service
-sudo systemctl restart batch-link.service
+sudo systemctl enable batch-link-klipper.service
+sudo systemctl start batch-link-klipper.service
+sudo systemctl restart batch-link-klipper.service
 
 echo 'The batch-link plugin has been successfully installed on your printer and is now running.'
 echo -e "\033[32m "

@@ -16,7 +16,7 @@ class BatchPrinterConnect:
     def __init__(self):
         logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
         self.username = os.environ.get('USER')
-        self.config_file_path = f"/home/{self.username}/moonraker/batch-link.cfg"
+        self.config_file_path = f"/home/{self.username}/moonraker/batch-link-klipper.cfg"
         self.config = configparser.ConfigParser()
         self.config.read(self.config_file_path)
 
@@ -530,6 +530,7 @@ class BatchPrinterConnect:
             response = requests.post(url)
             response.raise_for_status()
             logging.info('Successfully stopped print')
+            asyncio.create_task(self.send_printer_ready())
         except Exception as e:
             logging.error('Stopping print failed: %s', e)
 
@@ -574,6 +575,7 @@ class BatchPrinterConnect:
             response = requests.post(url, json=payload)
             response.raise_for_status()
             logging.info(f"Successfully moved extruder X:{x} Y:{y} Z:{z}")
+            asyncio.create_task(self.send_printer_ready())
         except Exception as e:
             logging.error(f"Failed to move extruder: {e}")
 
@@ -598,6 +600,7 @@ class BatchPrinterConnect:
             response = requests.post(url, json=bed_payload)
             response.raise_for_status()
             logging.info(f"Successfully set bed temperature to {bed_temp}°C")
+            asyncio.create_task(self.send_printer_ready())
         except Exception as e:
             logging.error(f"Failed to set temperatures: {e}")
 
@@ -684,7 +687,20 @@ class BatchPrinterConnect:
                 logging.info(f"[ALIVE] Error: {e}")
 
             await asyncio.sleep(self.alive_interval)
-
+    
+    async def send_printer_ready(self):
+        if self.remote_websocket is not None:
+            try:
+                msg = {
+                    'action': 'printer_ready',
+                    'content': {}
+                }
+                await self.remote_websocket.send(json.dumps(msg))
+                logging.info('Sent printer_ready update')
+            except Exception as e:
+                logging.warning(f"Failed to send printer_ready: {e}")
+        else:
+            logging.warning("WebSocket not connected — cannot send printer_ready")
 
 def main():
     communicator = BatchPrinterConnect()
