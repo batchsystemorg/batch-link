@@ -1,4 +1,4 @@
-
+import signal
 import os
 from datetime import datetime
 import cv2
@@ -20,7 +20,7 @@ class BatchPrinterConnect:
         self.config = configparser.ConfigParser()
         self.config.read(self.config_file_path)
 
-        if not self.config:
+        if not self.config.sections():
             raise FileNotFoundError(f"Configuration file not found at {self.config_file_path}")
         
         self.reconnect_interval = int(self.config['connection_settings']['RECONNECT_INTERVAL'])
@@ -82,6 +82,7 @@ class BatchPrinterConnect:
                     self.remote_websocket = websocket
                     logging.info(f"Successfully connected to the remote websocket")
                     await self.remote_on_open(websocket)
+                    await self.send_printer_ready()
                     self.initialUpdatesValues()
                     async for message in websocket:
                         try:
@@ -110,35 +111,39 @@ class BatchPrinterConnect:
                     logging.info(f"File name to print: {data['content']['file_name']}")
                     filename = data['content']['file_name']
                     url = data['content']['url']
-                    await asyncio.to_thread(self.print_file, filename, url)
+                    await self.send_printer_busy()
+                    await self.print_file(filename, url)
                 elif data['action'] == 'stop_print':
                     logging.info('Received stop print command for URL')
-                    self.stop_print()
+                    await self.send_printer_busy()
+                    await self.stop_print()
                 elif data['action'] == 'connect':
                     logging.info('Received reconnect command for URL')
-                    self.reconnect_printer()
+                    await self.reconnect_printer()
                 elif data['action'] == 'pause_print':
                     logging.info('Received pause print command for URL')
-                    self.pause_print()
+                    await self.pause_print()
                 elif data['action'] == 'resume_print':
                     logging.info('Received resume print command for URL')
-                    self.resume_print()
+                    await self.resume_print()
                 elif data['action'] == 'cmd':
                     logging.info('Received command to execute')
-                    self.send_command(data['content'])
+                    await self.send_printer_busy()
+                    await self.send_command(data['content'])
                 elif data['action'] == 'heat_printer':
                     logging.info('Receive heating command')
-                    self.set_temperatures(215, 60)
+                    await self.set_temperatures(215, 60)
                 elif data['action'] == 'cool_printer':
                     logging.info('Receive heating command')
-                    self.set_temperatures(0, 0)
+                    await self.set_temperatures(0, 0)
                 elif "move" in data['action']:
                     logging.info("ACTION")
                     x, y, z = self.parse_move_command(data['action'])
-                    self.move_extruder(x, y, z)
+                    await self.move_extruder(x, y, z)
                 elif data['action'] == 'reboot_system':
                     logging.info('Received reboot command')
-                    await asyncio.to_thread(self.reboot_system)
+                    await self.send_printer_busy()
+                    await self.reboot_system()
                 else:
                     logging.info('Unknown Command')
         except Exception as e:
@@ -154,7 +159,7 @@ class BatchPrinterConnect:
         logging.info('Message sent: %s', uuid_message)
 
     # **** REBOOT SYSTEM **** #
-    def reboot_system(self):
+    async def reboot_system(self):
         try:
             logging.info("Executing system reboot command")
             
@@ -162,7 +167,7 @@ class BatchPrinterConnect:
             self.updates['status'] = 'Unresponsive'
             self.update_data_changed = True
             
-            time.sleep(self.update_interval)
+            await asyncio.sleep(self.update_interval)
             
             result = os.system('sudo /sbin/shutdown -r now')
             
@@ -377,7 +382,7 @@ class BatchPrinterConnect:
             await asyncio.sleep(self.reconnect_interval)  # Keep retrying
 
 
-    def send_command(self, command):
+    async def send_command(self, command):
         try:
             # if command.lower() == 'reset':
                 
@@ -391,11 +396,11 @@ class BatchPrinterConnect:
             )
             response.raise_for_status()
             logging.info("Command executed successfully: %s", command)
-            asyncio.create_task(self.send_printer_ready())
+            await self.send_printer_ready()
         except requests.exceptions.RequestException as e:
             logging.info("Error executing command: %s", e)
 
-    def print_file(self, filename, url):
+    async def print_file(self, filename, url):
         headers = {
             'X-Api-Key': self.octo_api_key
         }
@@ -478,8 +483,10 @@ class BatchPrinterConnect:
         except requests.exceptions.RequestException as e:
             self.uploading_file_progress = None
             logging.error('File transfer failed: %s', e)
+        
+        await self.send_printer_ready()
 
-    def stop_print(self):
+    async def stop_print(self):
         try:
             logging.info('Stopping print')
             response = requests.post(
@@ -489,11 +496,11 @@ class BatchPrinterConnect:
             )
             response.raise_for_status()
             logging.info('Successfully stopped print')
-            asyncio.create_task(self.send_printer_ready())
+            await self.send_printer_ready()
         except Exception as e:
             logging.info('Stopping print failed: %s', e)
 
-    def reconnect_printer(self):
+    async def reconnect_printer(self):
         try:
             logging.info('Reconnecting')
             response = requests.post(
@@ -509,7 +516,7 @@ class BatchPrinterConnect:
         except Exception as e:
             logging.info('Stopping print failed: %s', e)
 
-    def pause_print(self):
+    async def pause_print(self):
         try:
             logging.info('Pausing Print')
             response = requests.post(
@@ -522,7 +529,7 @@ class BatchPrinterConnect:
         except requests.exceptions.RequestException as e:
             logging.info('Pausing print failed: %s', e)
 
-    def resume_print(self):
+    async def resume_print(self):
         try:
             logging.info('Resuming Print')
             response = requests.post(
@@ -552,7 +559,7 @@ class BatchPrinterConnect:
         
         return x, y, z
 
-    def move_extruder(self, x, y, z):
+    async def move_extruder(self, x, y, z):
         payload = {
             "command": "jog",
             "x": x,        # Move 10mm in the X direction
@@ -570,9 +577,9 @@ class BatchPrinterConnect:
         
         response.raise_for_status()
         logging.info("Successfully executed move Extruder command")
-        asyncio.create_task(self.send_printer_ready())
+        await self.send_printer_ready()
 
-    def set_temperatures(self, tool_temp: int, bed_temp: int):
+    async def set_temperatures(self, tool_temp: int, bed_temp: int):
         try:
             tool_payload = {"command": "target", "targets": {"tool0": tool_temp}}
             tool_response = requests.post(
@@ -591,7 +598,7 @@ class BatchPrinterConnect:
             )
             bed_response.raise_for_status()
             logging.info(f"Successfully set bed temperature to {bed_temp}°C")
-            asyncio.create_task(self.send_printer_ready())
+            await self.send_printer_ready()
         except requests.exceptions.RequestException as e:
             logging.error(f"Failed to set temperatures: {e}")
 
@@ -678,6 +685,20 @@ class BatchPrinterConnect:
 
             await asyncio.sleep(self.alive_interval)
     
+    async def send_printer_busy(self):
+        if self.remote_websocket is not None:
+            try:
+                msg = {
+                    'action': 'printer_busy',
+                    'content': {}
+                }
+                await self.remote_websocket.send(json.dumps(msg))
+                logging.info('Sent printer_busy update')
+            except Exception as e:
+                logging.warning(f"Failed to send printer_busy: {e}")
+        else:
+            logging.warning("WebSocket not connected — cannot send printer_busy")
+    
     async def send_printer_ready(self):
         if self.remote_websocket is not None:
             try:
@@ -697,17 +718,20 @@ class BatchPrinterConnect:
 def main():
     communicator = BatchPrinterConnect()
     loop = asyncio.get_event_loop()
-    tasks = asyncio.gather(
-        communicator.remote_connection(),
-        communicator.printer_connection(),
-        communicator.send_printer_update(),
-        communicator.send_printer_alive(),
-        # communicator.capture_images(),
-        # communicator.listen_to_printer_push_api(),
-        return_exceptions=True
-    )
-    loop.run_until_complete(tasks)
-    loop.close()
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, loop.stop)
+
+    try:
+        tasks = asyncio.gather(
+            communicator.remote_connection(),
+            communicator.printer_connection(),
+            communicator.send_printer_update(),
+            communicator.send_printer_alive(),
+        )
+        loop.run_until_complete(tasks)
+    finally:
+        loop.close()
 
 
 if __name__ == "__main__":

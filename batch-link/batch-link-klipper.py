@@ -1,4 +1,4 @@
-
+import signal
 import os
 from datetime import datetime
 import cv2
@@ -20,7 +20,7 @@ class BatchPrinterConnect:
         self.config = configparser.ConfigParser()
         self.config.read(self.config_file_path)
 
-        if not self.config:
+        if not self.config.sections():
             raise FileNotFoundError(f"Configuration file not found at {self.config_file_path}")
         
         self.reconnect_interval = int(self.config['connection_settings']['RECONNECT_INTERVAL'])
@@ -51,7 +51,7 @@ class BatchPrinterConnect:
         self.last_status = None
         self.last_gcode_command = None
 
-         # Get initial printer status
+         # get initial printer status
         try:
             response = requests.get(f"{self.printer_url}/printer/info")
             response.raise_for_status()
@@ -95,6 +95,7 @@ class BatchPrinterConnect:
                     self.remote_websocket = websocket
                     logging.info(f"Successfully connected to the remote websocket")
                     await self.remote_on_open(websocket)
+                    await self.send_printer_ready()
                     self.initialUpdatesValues()
                     async for message in websocket:
                         try:
@@ -122,35 +123,39 @@ class BatchPrinterConnect:
                 logging.info(f"File name to print: {data['content']['file_name']}")
                 filename = data['content']['file_name']
                 url = data['content']['url']
-                await asyncio.to_thread(self.print_file, filename, url)
+                await self.send_printer_busy()
+                await self.print_file(filename, url)
             elif data['action'] == 'stop_print':
                 logging.info('Received stop print command for URL')
-                self.stop_print()
+                await self.send_printer_busy()
+                await self.stop_print()
             elif data['action'] == 'connect':
                 logging.info('Received reconnect command for URL')
-                self.reconnect_printer()
+                await self.reconnect_printer()
             elif data['action'] == 'pause_print':
                 logging.info('Received pause print command for URL')
-                self.pause_print()
+                await self.pause_print()
             elif data['action'] == 'resume_print':
                 logging.info('Received resume print command for URL')
-                self.resume_print()
+                await self.resume_print()
             elif data['action'] == 'cmd':
                 logging.info('Received command to execute')
-                self.send_command(data['content'])
+                await self.send_printer_busy()
+                await self.send_command(data['content'])
             elif data['action'] == 'heat_printer':
                 logging.info('Receive heating command')
-                self.set_temperatures(215, 60)
+                await self.set_temperatures(215, 60)
             elif data['action'] == 'cool_printer':
                 logging.info('Receive heating command')
-                self.set_temperatures(0, 0)
+                await self.set_temperatures(0, 0)
             elif "move" in data['action']:
                 logging.info("ACTION")
                 x, y, z = self.parse_move_command(data['action'])
-                self.move_extruder(x, y, z)
+                await self.move_extruder(x, y, z)
             elif data['action'] == 'reboot_system':
                 logging.info('Received reboot command')
-                await asyncio.to_thread(self.reboot_system)
+                await self.send_printer_busy()
+                await self.reboot_system()
 
             else:
                 logging.info('Unknown Command')
@@ -165,7 +170,7 @@ class BatchPrinterConnect:
         logging.info('Message sent: %s', uuid_message)
 
     # **** REBOOT SYSTEM **** #
-    def reboot_system(self):
+    async def reboot_system(self):
         try:
             logging.info("Executing system reboot command")
             
@@ -173,7 +178,7 @@ class BatchPrinterConnect:
             self.updates['status'] = 'Unresponsive'
             self.update_data_changed = True
             
-            time.sleep(self.update_interval)
+            await asyncio.sleep(self.update_interval)
             
             result = os.system('sudo /sbin/shutdown -r now')
             
@@ -322,36 +327,32 @@ class BatchPrinterConnect:
     async def printer_connection(self):
         while True:
             try:
-                # Get printer status - this is the key difference for Moonraker
+                # printer data
                 response = requests.get(f"{self.printer_url}/printer/objects/query?extruder&heater_bed&print_stats&virtual_sdcard")
                 response.raise_for_status()
                 printer_data = response.json()
                 
-                # Extract relevant data from the response
                 result = printer_data.get('result', {})
                 status = result.get('status', {})
                 
-                # Update the temperature and status information
+                # initiate data update object
                 temp_updates = {}
                 
-                # Get extruder temperature
+                # get values
                 extruder = status.get('extruder', {})
                 temp_updates['nozzle_temperature'] = extruder.get('temperature', 0.0)
                 temp_updates['nozzle_temperature_target'] = extruder.get('target', 0.0)
                 
-                # Get bed temperature
                 heater_bed = status.get('heater_bed', {})
                 temp_updates['bed_temperature'] = heater_bed.get('temperature', 0.0)
                 temp_updates['bed_temperature_target'] = heater_bed.get('target', 0.0)
                 
-                # Get print status
                 print_stats = status.get('print_stats', {})
                 virtual_sdcard = status.get('virtual_sdcard', {})
                 
-                # Map Klipper states to equivalent OctoPrint states
+                # map state to octoprint states
                 klipper_state = print_stats.get('state', '').lower()
                 
-                # Convert Klipper state to something similar to OctoPrint's states
                 if klipper_state == 'printing':
                     temp_updates['status'] = 'printing'
                     temp_updates['job_state'] = 'Printing'
@@ -371,12 +372,12 @@ class BatchPrinterConnect:
                     temp_updates['status'] = klipper_state
                     temp_updates['job_state'] = klipper_state.capitalize()
                 
-                # Get job details
+                # print job details
                 temp_updates['file_name'] = print_stats.get('filename')
                 temp_updates['progress'] = virtual_sdcard.get('progress', 0.0) * 100
                 temp_updates['print_time'] = print_stats.get('print_duration', 0.0)
                 
-                # Calculate time left based on progress
+                # calculate time left
                 if temp_updates['progress'] > 0 and temp_updates['print_time'] > 0:
                     time_left = (temp_updates['print_time'] / temp_updates['progress']) * (100 - temp_updates['progress'])
                     temp_updates['print_time_left'] = time_left
@@ -406,7 +407,7 @@ class BatchPrinterConnect:
                     self.updates['status'] = 'error'
                     self.update_data_changed = True
                     await asyncio.sleep(10)
-                    continue  # Skip this iteration but keep the loop running
+                    continue  # skip this iteration but keep the loop running
                 else:
                     logging.error(f"HTTP Error: {e}")
             except Exception as e:
@@ -414,10 +415,10 @@ class BatchPrinterConnect:
                 self.update_data_changed = True
                 logging.error("Error connecting to Moonraker: %s", e)
 
-            await asyncio.sleep(self.reconnect_interval)  # Keep retrying
+            await asyncio.sleep(self.reconnect_interval)  # keep retrying
 
 
-    def send_command(self, command):
+    async def send_command(self, command):
         try:
             payload = {
                 "script": command
@@ -429,21 +430,20 @@ class BatchPrinterConnect:
         except requests.exceptions.RequestException as e:
             logging.error("Error executing command: %s", e)
 
-    def print_file(self, filename, url):
+    async def print_file(self, filename, url):
         try:
             start_time = time.time()
             logging.info('Starting file transfer process from %s', url)
             
-            # Add a timeout and user-agent to improve download reliability
             download_headers = {
                 'User-Agent': 'Mozilla/5.0 (compatible; PiPrinter/1.0)'
             }
             
-            # Use a session to maintain connection and improve download speed
+            # downlod in chunks with session to feed back to server
             self.uploading_file_progress = 0.0
             self.update_data_changed = True
             with requests.Session() as session:
-                # Download the file with optimized parameters
+                # download the file with optimized parameters
                 with session.get(
                     url, 
                     stream=True, 
@@ -451,16 +451,13 @@ class BatchPrinterConnect:
                     timeout=60
                 ) as file_response:
                     file_response.raise_for_status()
-                    
-                    # Use a BytesIO buffer to collect the data
                     file_stream = io.BytesIO()
                     
-                    # Track download progress
+                    # track download progress
                     total_size = int(file_response.headers.get('content-length', 0))
                     bytes_downloaded = 0
                     last_log_time = time.time()
                     
-                    # Download with larger chunks to improve throughput
                     for chunk in file_response.iter_content(chunk_size=1024 * 1024 * 4):  # 4MB chunks
                         if chunk:
                             file_stream.write(chunk)
@@ -470,7 +467,7 @@ class BatchPrinterConnect:
                                 self.uploading_file_progress = (bytes_downloaded / total_size) * 100
                                 self.update_data_changed = True
                             
-                            # Log progress every 5 seconds
+                            # log progress every 5 seconds
                             current_time = time.time()
                             if current_time - last_log_time > 5:
                                 speed = bytes_downloaded / (current_time - start_time) / 1024 / 1024
@@ -480,19 +477,19 @@ class BatchPrinterConnect:
                 download_time = time.time() - start_time
                 logging.info('Download completed in %.2f seconds', download_time)
                 
-                # Reset the file pointer to the beginning
+                # reset the file pointer
                 file_stream.seek(0)
                 
-                # Upload
+                # upload to printer
                 upload_start = time.time()
                 filename_safe = os.path.basename(filename)
                 gcodes_dir = f"/home/{self.username}/printer_data/gcodes"
                 if not os.path.exists(gcodes_dir):
-                    # Try alternative locations
+                    # try alternative locations
                     if os.path.exists(f"/home/{self.username}/klipper_config/gcodes"):
                         gcodes_dir = f"/home/{self.username}/klipper_config/gcodes"
                     else:
-                        # Create the directory
+                        # create the directory
                         os.makedirs(gcodes_dir, exist_ok=True)
                 
                 file_path = os.path.join(gcodes_dir, filename_safe)
@@ -501,7 +498,7 @@ class BatchPrinterConnect:
                 
                 logging.info(f'File saved to {file_path}')
                 
-                # Start printing the file with Moonraker API
+                # start printing file
                 print_url = f"{self.printer_url}/printer/print/start"
                 print_payload = {
                     "filename": filename_safe
@@ -522,19 +519,21 @@ class BatchPrinterConnect:
         except requests.exceptions.RequestException as e:
             self.uploading_file_progress = None
             logging.error('File transfer failed: %s', e)
+        
+        await self.send_printer_ready()
 
-    def stop_print(self):
+    async def stop_print(self):
         try:
             logging.info('Stopping print')
             url = f"{self.printer_url}/printer/print/cancel"
             response = requests.post(url)
             response.raise_for_status()
             logging.info('Successfully stopped print')
-            asyncio.create_task(self.send_printer_ready())
+            await self.send_printer_ready()
         except Exception as e:
             logging.error('Stopping print failed: %s', e)
 
-    def reconnect_printer(self):
+    async def reconnect_printer(self):
         try:
             logging.info('Reconnecting printer')
             url = f"{self.printer_url}/printer/restart"
@@ -544,7 +543,7 @@ class BatchPrinterConnect:
         except Exception as e:
             logging.error('Reconnect failed: %s', e)
 
-    def pause_print(self):
+    async def pause_print(self):
         try:
             logging.info('Pausing Print')
             url = f"{self.printer_url}/printer/print/pause"
@@ -554,7 +553,7 @@ class BatchPrinterConnect:
         except Exception as e:
             logging.error('Pausing print failed: %s', e)
 
-    def resume_print(self):
+    async def resume_print(self):
         try:
             logging.info('Resuming Print')
             url = f"{self.printer_url}/printer/print/resume"
@@ -564,8 +563,24 @@ class BatchPrinterConnect:
         except Exception as e:
             logging.error('Resuming print failed: %s', e)
 
-
-    def move_extruder(self, x, y, z):
+    def parse_move_command(self, action_string):
+        # use a regex to extract x, y, and z values
+        match = re.findall(r'[xyz]:-?\d+', action_string)
+        move_values = {}
+        
+        # Iterate through the matches and assign the values to x, y, z
+        for m in match:
+            axis, value = m.split(":")
+            move_values[axis] = int(value)  # Convert value to int (or float if needed)
+        
+        # Now you have the x, y, and z values as a dictionary
+        x = move_values.get('x', 0)  # Default to 0 if not provided
+        y = move_values.get('y', 0)  # Default to 0 if not provided
+        z = move_values.get('z', 0)  # Default to 0 if not provided
+        
+        return x, y, z
+    
+    async def move_extruder(self, x, y, z):
         try:
             gcode_command = f"G91\nG1 X{x} Y{y} Z{z} F1000\nG90"
             payload = {
@@ -575,15 +590,15 @@ class BatchPrinterConnect:
             response = requests.post(url, json=payload)
             response.raise_for_status()
             logging.info(f"Successfully moved extruder X:{x} Y:{y} Z:{z}")
-            asyncio.create_task(self.send_printer_ready())
+            await self.send_printer_ready()
         except Exception as e:
             logging.error(f"Failed to move extruder: {e}")
 
-    def set_temperatures(self, tool_temp: int, bed_temp: int):
+    async def set_temperatures(self, tool_temp: int, bed_temp: int):
         try:
             url = f"{self.printer_url}/printer/gcode/script"
 
-            # Set extruder temperature
+            # set extruder temp
             extruder_command = f"M104 S{tool_temp}"
             extruder_payload = {
                 "script": extruder_command
@@ -592,7 +607,7 @@ class BatchPrinterConnect:
             response.raise_for_status()
             logging.info(f"Successfully set tool temperature to {tool_temp}°C")
 
-            # Set bed temperature
+            # set bed temp
             bed_command = f"M140 S{bed_temp}"
             bed_payload = {
                 "script": bed_command
@@ -600,7 +615,7 @@ class BatchPrinterConnect:
             response = requests.post(url, json=bed_payload)
             response.raise_for_status()
             logging.info(f"Successfully set bed temperature to {bed_temp}°C")
-            asyncio.create_task(self.send_printer_ready())
+            await self.send_printer_ready()
         except Exception as e:
             logging.error(f"Failed to set temperatures: {e}")
 
@@ -688,6 +703,20 @@ class BatchPrinterConnect:
 
             await asyncio.sleep(self.alive_interval)
     
+    async def send_printer_busy(self):
+        if self.remote_websocket is not None:
+            try:
+                msg = {
+                    'action': 'printer_busy',
+                    'content': {}
+                }
+                await self.remote_websocket.send(json.dumps(msg))
+                logging.info('Sent printer_busy update')
+            except Exception as e:
+                logging.warning(f"Failed to send printer_busy: {e}")
+        else:
+            logging.warning("WebSocket not connected — cannot send printer_busy")
+            
     async def send_printer_ready(self):
         if self.remote_websocket is not None:
             try:
@@ -705,17 +734,20 @@ class BatchPrinterConnect:
 def main():
     communicator = BatchPrinterConnect()
     loop = asyncio.get_event_loop()
-    tasks = asyncio.gather(
-        communicator.remote_connection(),
-        communicator.printer_connection(),
-        communicator.send_printer_update(),
-        communicator.send_printer_alive(),
-        # communicator.capture_images(),
-        # communicator.listen_to_printer_push_api(),
-        return_exceptions=True
-    )
-    loop.run_until_complete(tasks)
-    loop.close()
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, loop.stop)
+
+    try:
+        tasks = asyncio.gather(
+            communicator.remote_connection(),
+            communicator.printer_connection(),
+            communicator.send_printer_update(),
+            communicator.send_printer_alive(),
+        )
+        loop.run_until_complete(tasks)
+    finally:
+        loop.close()
 
 
 if __name__ == "__main__":

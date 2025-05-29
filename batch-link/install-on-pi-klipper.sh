@@ -37,6 +37,16 @@ sudo systemctl enable batch-link-klipper.service
 sudo systemctl start batch-link-klipper.service
 sudo systemctl restart batch-link-klipper.service
 
+# Add reboot/shutdown permissions for the user
+echo -e "\033[0mAdding reboot permissions for user: $username"
+echo "$username ALL=(ALL) NOPASSWD: /sbin/reboot, /sbin/shutdown" | sudo tee -a /etc/sudoers > /dev/null
+
+if [ $? -eq 0 ]; then
+    echo -e "\033[32mReboot permissions added successfully"
+else
+    echo -e "\033[31mFailed to add reboot permissions"
+fi
+
 echo 'The batch-link plugin has been successfully installed on your printer and is now running.'
 echo -e "\033[32m "
 echo -e "Please add its UUID to your account to have it appear as a pritner"
