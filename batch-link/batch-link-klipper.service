@@ -2,7 +2,7 @@
 Description=Connecting your printer to the Batch.Works Ecosystem
 
 [Service]
-ExecStart=/usr/bin/python /home/:::username/batch-link/batch-link-klipper.py
+ExecStart=/home/:::username/batch-link/venv/bin/python /home/:::username/batch-link/batch-link.py
 Restart=always
 RestartSec=5s
 User=:::username
