@@ -28,9 +28,13 @@ echo -e "Now installing python frameworks and we done."
 sudo apt-get update
 sudo apt-get install python3-venv
 sudo apt-get install -y libopenblas0 libopenblas-dev
-python -m venv /home/$username/batch-link/venv
+python3 -m venv /home/$username/batch-link/venv
 source /home/$username/batch-link/venv/bin/activate
-pip install -r requirements.txt
+
+if ! pip install -r /home/$username/batch-link/requirements.txt; then
+    echo "❌ Failed to install Python requirements"
+    exit 1
+fi
 
 sudo systemctl daemon-reload
 sudo systemctl enable batch-link-klipper.service
