@@ -4,7 +4,7 @@ SSH_PASS="pingpong5"
 SUDO_PASS="pingpong5"
 
 # Loop from 002 to 045
-for n in $(seq -f "%03g" 2 2); do
+for n in $(seq -f "%03g" 2 45); do
   host="bw-ldn-$n.local"
   echo "🔧 Updating $host ..."
   
