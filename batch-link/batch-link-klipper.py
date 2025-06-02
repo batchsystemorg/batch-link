@@ -406,6 +406,7 @@ class BatchPrinterConnect:
                     logging.warning("409 Conflict Error: Printer is busy or disconnected. Retrying in 10 seconds.")
                     self.updates['status'] = 'error'
                     self.update_data_changed = True
+                    await self.reconnect_printer()
                     await asyncio.sleep(10)
                     continue  # skip this iteration but keep the loop running
                 else:
@@ -682,6 +683,7 @@ class BatchPrinterConnect:
 
     async def send_printer_alive(self):
         while True:
+            logging.info(f"[VERSION] {self.version}")
             logging.info(f"[ALIVE] Called")
             try:
                 if self.remote_websocket is not None:

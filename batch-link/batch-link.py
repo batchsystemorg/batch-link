@@ -14,6 +14,7 @@ import time
 
 class BatchPrinterConnect:
     def __init__(self):
+        self.version = 0.7
         logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
         username = os.environ.get('USER')
         self.config_file_path = f"/home/{username}/.octoprint/batch-link.cfg"
@@ -370,8 +371,8 @@ class BatchPrinterConnect:
                 if e.response.status_code == 409:
                     logging.warning("409 Conflict Error: Printer is busy or disconnected. Retrying in 10 seconds.")
                     self.updates['status'] = 'error'
-                    self.reconnect_printer()
                     self.update_data_changed = True
+                    await self.reconnect_printer()
                     await asyncio.sleep(10)
                     continue  # Skip this iteration but keep the loop running
                 else:
@@ -664,6 +665,7 @@ class BatchPrinterConnect:
 
     async def send_printer_alive(self):
         while True:
+            logging.info(f"[VERSION] {self.version}")
             logging.info(f"[ALIVE] Called")
             try:
                 if self.remote_websocket is not None:
