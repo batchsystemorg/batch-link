@@ -1,7 +1,7 @@
 import signal
 import os
 from datetime import datetime
-import cv2
+# import cv2
 import asyncio
 import configparser
 import requests
@@ -179,6 +179,8 @@ class BatchPrinterConnect:
                 
         except Exception as e:
             logging.error(f"Failed to execute reboot: {e}")
+    
+    
     # ************* CAMERA *************** #
     def fetch_snapshot(self):
         try:

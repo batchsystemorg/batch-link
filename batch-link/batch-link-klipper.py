@@ -14,6 +14,7 @@ import time
 
 class BatchPrinterConnect:
     def __init__(self):
+        self.version = 0.7
         logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
         self.username = os.environ.get('USER')
         self.config_file_path = f"/home/{self.username}/moonraker/batch-link-klipper.cfg"

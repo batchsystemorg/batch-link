@@ -21,7 +21,11 @@ service_file=/etc/systemd/system/batch-link.service
 sudo sed -i "s|:::username|$username|g" "$service_file"
 
 config_file=/home/$username/.octoprint/batch-link.cfg
-UUID=$(cat /proc/sys/kernel/random/uuid)
+if [[ -n "$1" ]]; then
+    UUID="$1"
+else
+    UUID=$(cat /proc/sys/kernel/random/uuid)
+fi
 sudo sed -i "s|:::uuid|$UUID|g" "$config_file"
 
 echo -e "Now installing python frameworks and we done."
