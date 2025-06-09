@@ -12,21 +12,27 @@ username=`whoami`
 
 echo -e "\033[0mAnd we need the password one last time ⊂(◉‿◉)つ"
 
-mv batch-link-klipper.cfg /home/$username/moonraker
-sudo mv /home/$username/batch-link/batch-link-klipper.service /etc/systemd/system/
+sudo mv /home/$username/batch-link/batch-link.service /etc/systemd/system/
 
 echo -e "\033[0m "
 
-service_file=/etc/systemd/system/batch-link-klipper.service
+service_file=/etc/systemd/system/batch-link.service
 sudo sed -i "s|:::username|$username|g" "$service_file"
 
-config_file=/home/$username/moonraker/batch-link-klipper.cfg
+config_file=/home/$username/batch-link/batch-link.cfg
 if [[ -n "$1" ]]; then
-    UUID="$1"
+    DRIVER="$1"
+else
+    DRIVER="OCTOPRINT"
+fi
+if [[ -n "$2" ]]; then
+    UUID="$2"
 else
     UUID=$(cat /proc/sys/kernel/random/uuid)
 fi
+
 sudo sed -i "s|:::uuid|$UUID|g" "$config_file"
+sudo sed -i "s|:::driver|$DRIVER|g" "$config_file"
 
 echo -e "Now installing python frameworks and we done."
 sudo apt-get update
@@ -41,9 +47,9 @@ if ! pip install -r /home/$username/batch-link/requirements.txt; then
 fi
 
 sudo systemctl daemon-reload
-sudo systemctl enable batch-link-klipper.service
-sudo systemctl start batch-link-klipper.service
-sudo systemctl restart batch-link-klipper.service
+sudo systemctl enable batch-link.service
+sudo systemctl start batch-link.service
+sudo systemctl restart batch-link.service
 
 # Add reboot/shutdown permissions for the user
 echo -e "\033[0mAdding reboot permissions for user: $username"

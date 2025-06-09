@@ -1,6 +1,6 @@
 import re
 
-def parse_move_command(self, action_string):
+def parse_move_command(action_string):
     # Use a regex to extract x, y, and z values
     match = re.findall(r'[xyz]:-?\d+', action_string)
     move_values = {}
@@ -17,7 +17,7 @@ def parse_move_command(self, action_string):
     
     return x, y, z
 
-def has_significant_difference(self, key, old_value, new_value):
+def has_significant_difference(key, old_value, new_value):
     thresholds = {
         'bed_temperature': 0.7,
         'nozzle_temperature': 0.7,

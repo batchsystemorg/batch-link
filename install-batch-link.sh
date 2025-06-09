@@ -1,7 +1,7 @@
 #!/bin/bash
 
 copy_files() {
-    local passed_uuid=$1
+    local driver_type=$1 passed_uuid=$2
 
     echo -e "\033[0m "
     read -p "Rasp Pi IP address: " ip_address
@@ -27,7 +27,7 @@ copy_files() {
       echo 'Connected to Raspberry Pi.'; \
       cd /home/$username/batch-link; \
       echo 'Initiate install script on Pi'; \
-      bash install-on-pi-octoprint.sh ${passed_uuid};"
+      bash local-installer.sh ${driver_type} ${passed_uuid};"
 
 }
 
@@ -79,8 +79,24 @@ main() {
     read -p "You got Octoprint on your Pi? (Y/N): " copy_option
     if [[ $copy_option == "Y" || $copy_option == "y" ]]; 
     then
-        UUID_ARG="$1"
-        copy_files "$UUID_ARG"
+        PASSED_UUID="$1"
+        echo "Choose your environment:"
+        select env_option in "OCTOPRINT" "KLIPPER"; do
+            case $env_option in
+                "OCTOPRINT")
+                    DRIVER_TYPE="OCTOPRINT"
+                    break
+                    ;;
+                "KLIPPER")
+                    DRIVER_TYPE="KLIPPER"
+                    break
+                    ;;
+                *)
+                    echo "Invalid option, try again."
+                    ;;
+            esac
+        done
+        copy_files "$DRIVER_TYPE" "$PASSED_UUID" 
     else
         echo "Okey, sorry to hear, see ya next time :)"
     fi

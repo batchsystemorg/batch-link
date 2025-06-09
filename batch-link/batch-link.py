@@ -8,14 +8,15 @@ import json
 import websockets
 import logging
 import time
-from .printercontroller.octoprint import Octoprint
+from printercontroller.octoprint import Octoprint
+from printercontroller.klipper import Klipper
 
 class BatchPrinterConnect:
     def __init__(self):
         self.version = 0.71
         logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
-        username = os.environ.get('USER')
-        self.config_file_path = f"/home/{username}/batch-link/batch-link.cfg"
+        self.username = os.environ.get('USER')
+        self.config_file_path = f"/home/{self.username}/batch-link/batch-link.cfg"
         self.config = configparser.ConfigParser()
         self.config.read(self.config_file_path)
 
@@ -26,7 +27,7 @@ class BatchPrinterConnect:
         if self.printerdriver == 'OCTOPRINT':
             self.printer = Octoprint(self)
         elif self.printerdriver == 'KLIPPER':
-            self.printer = None
+            self.printer = Klipper(self)
         else:
             raise ValueError(f"Printer driver not defined in config")
         
@@ -160,7 +161,6 @@ class BatchPrinterConnect:
         try:
             logging.info("Executing system reboot command")
             
-            self.status = 'Unresponsive'
             self.updates['status'] = 'Unresponsive'
             self.update_data_changed = True
             
@@ -191,7 +191,7 @@ class BatchPrinterConnect:
             'nozzle_temperature': None,
             'bed_temperature_target': None,
             'nozzle_temperature_target': None,
-            'status': self.status,
+            'status': 'Unresponsive',
             'print_stats': {
                 "filename": None,
                 "total_duration": None,
