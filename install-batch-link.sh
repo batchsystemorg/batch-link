@@ -70,13 +70,13 @@ main() {
                                             ..                                            
                                                                                           
                                                                                           
-                                BATCH LINK OCTOPRINT INSTALLER                                                     
+                                   BATCH LINK INSTALLER                                                     
                                                                                           
                                                                                           
                                                                                       
             "
     echo -e "\033[32m"
-    read -p "You got Octoprint on your Pi? (Y/N): " copy_option
+    read -p "This will install batch link onto your Pi. Continue? (y/n): " copy_option
     if [[ $copy_option == "Y" || $copy_option == "y" ]]; 
     then
         PASSED_UUID="$1"
