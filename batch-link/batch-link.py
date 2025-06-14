@@ -13,7 +13,7 @@ from printercontroller.klipper import Klipper
 
 class BatchPrinterConnect:
     def __init__(self):
-        self.version = 0.71
+        self.version = 0.72
         logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
         self.username = os.environ.get('USER')
         self.config_file_path = f"/home/{self.username}/batch-link/batch-link.cfg"
