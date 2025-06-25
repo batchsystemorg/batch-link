@@ -10,6 +10,7 @@ import logging
 import time
 from printercontroller.octoprint import Octoprint
 from printercontroller.klipper import Klipper
+from utils.helpers import parse_move_command
 
 class BatchPrinterConnect:
     def __init__(self):
@@ -136,7 +137,7 @@ class BatchPrinterConnect:
                     await self.printer.set_temperatures(0, 0)
                 elif "move" in data['action']:
                     logging.info("ACTION")
-                    x, y, z = self.parse_move_command(data['action'])
+                    x, y, z = parse_move_command(data['action'])
                     await self.printer.move_extruder(x, y, z)
                 elif data['action'] == 'reboot_system':
                     logging.info('Received reboot command')
