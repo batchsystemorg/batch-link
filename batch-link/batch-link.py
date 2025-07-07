@@ -40,6 +40,10 @@ class BatchPrinterConnect:
         self.uuid = self.config['printer_details']['UUID'].strip()
         self.update_data_changed = True
 
+        # Task tracking for non-blocking operations
+        self.current_print_task = None
+        self.current_command_task = None
+
         ## ------- CAMERA ------- ##
         # self.current_recording_folder = None
         # try:
@@ -111,10 +115,16 @@ class BatchPrinterConnect:
                     filename = data['content']['file_name']
                     url = data['content']['url']
                     await self.send_printer_busy()
-                    await self.printer.print_file(filename, url)
+                    # Non-blocking: let print_file run in background
+                    if self.current_print_task and not self.current_print_task.done():
+                        self.current_print_task.cancel()
+                    self.current_print_task = asyncio.create_task(self.printer.print_file(filename, url))
                 elif data['action'] == 'stop_print':
                     logging.info('Received stop print command for URL')
                     await self.send_printer_busy()
+                    # Cancel any running print task
+                    if self.current_print_task and not self.current_print_task.done():
+                        self.current_print_task.cancel()
                     await self.printer.stop_print()
                 elif data['action'] == 'connect':
                     logging.info('Received reconnect command for URL')
@@ -128,7 +138,10 @@ class BatchPrinterConnect:
                 elif data['action'] == 'cmd':
                     logging.info('Received command to execute')
                     await self.send_printer_busy()
-                    await self.printer.send_command(data['content'])
+                    # Non-blocking: let command run in background
+                    if self.current_command_task and not self.current_command_task.done():
+                        self.current_command_task.cancel()
+                    self.current_command_task = asyncio.create_task(self.printer.send_command(data['content']))
                 elif data['action'] == 'heat_printer':
                     logging.info('Receive heating command')
                     await self.printer.set_temperatures(215, 60)
@@ -142,7 +155,8 @@ class BatchPrinterConnect:
                 elif data['action'] == 'reboot_system':
                     logging.info('Received reboot command')
                     await self.send_printer_busy()
-                    await self.reboot_system()
+                    # Non-blocking: let reboot run in background
+                    asyncio.create_task(self.reboot_system())
                 else:
                     logging.info('Unknown Command')
         except Exception as e:
