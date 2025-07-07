@@ -119,7 +119,7 @@ class Octoprint:
                 data.add_field('print', 'true')
                 
                 upload_url = self.parent.printer_url + '/api/files/local'
-                async with session.post(upload_url, data=data, headers=upload_headers) as response:
+                async with session.post(upload_url, data=data, headers=upload_headers, timeout=300) as response:
                     response.raise_for_status()
                     self.parent.updates['cancelled'] = None
                     response_text = await response.text()
@@ -142,7 +142,7 @@ class Octoprint:
         url = f"{self.parent.printer_url}/api/printer/command"
         try:
             async with aiohttp.ClientSession(headers=self.parent.headers) as session:
-                async with session.post(url, json=payload) as response:
+                async with session.post(url, json=payload, timeout=15) as response:
                     response.raise_for_status()
                     logging.info("Command executed successfully: %s", command)
                     await self.parent.send_printer_ready()
@@ -155,7 +155,7 @@ class Octoprint:
         try:
             logging.info('Stopping print')
             async with aiohttp.ClientSession(headers=self.parent.headers) as session:
-                async with session.post(url, json=payload) as response:
+                async with session.post(url, json=payload, timeout=15) as response:
                     response.raise_for_status()
                     logging.info('Successfully stopped print')
                     await self.parent.send_printer_ready()
