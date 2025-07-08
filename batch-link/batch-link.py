@@ -14,7 +14,7 @@ from utils.helpers import parse_move_command
 
 class BatchPrinterConnect:
     def __init__(self):
-        self.version = 0.72
+        self.version = 0.250708
         logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
         self.username = os.environ.get('USER')
         self.config_file_path = f"/home/{self.username}/batch-link/batch-link.cfg"
@@ -91,7 +91,9 @@ class BatchPrinterConnect:
                         try:
                             await self.remote_on_message(websocket, message)
                         except Exception as e:
-                            logging.error(f"Error processing message: {e}")
+                            logging.error(f"Error processing message: {e} - forcing reconnection")
+                            # Force reconnection by breaking out of the message loop
+                            break
                     
             except websockets.exceptions.ConnectionClosedOK as e:
                 logging.warning(f"Websocket connection closed normally: {e} (code: {e.code})")
@@ -105,9 +107,16 @@ class BatchPrinterConnect:
                 await asyncio.sleep(self.reconnect_interval)
 
     async def remote_on_message(self, ws, message):
-        data = json.loads(message)
-        logging.info(f"Received from remote")
-        logging.info(data)
+        try:
+            data = json.loads(message)
+            logging.info(f"Received from remote: {data.get('action', 'unknown')}")
+        except json.JSONDecodeError as e:
+            logging.error(f"JSON decode error: {e} - message: {message[:100]}...")
+            raise  # This will trigger reconnection
+        except Exception as e:
+            logging.error(f"Unexpected error parsing message: {e}")
+            raise  # This will trigger reconnection
+        
         try:
             if 'action' in data and 'content' in data:
                 if data['action'] == 'print':
@@ -154,13 +163,14 @@ class BatchPrinterConnect:
                     await self.printer.move_extruder(x, y, z)
                 elif data['action'] == 'reboot_system':
                     logging.info('Received reboot command')
-                    await self.send_printer_busy()
+                    # await self.send_printer_busy()
                     # Non-blocking: let reboot run in background
                     asyncio.create_task(self.reboot_system())
                 else:
-                    logging.info('Unknown Command')
+                    logging.warning(f'Unknown command: {data.get("action", "no_action")}')
         except Exception as e:
-            logging.warning(f"Error decoding data {data}: {e}")
+            logging.error(f"Error executing command {data.get('action', 'unknown')}: {e} - will reconnect")
+            raise  # This will trigger reconnection
 
     async def remote_on_open(self, ws):
         logging.info("Remote connection opened")
@@ -180,7 +190,7 @@ class BatchPrinterConnect:
             self.update_data_changed = True
             
             await asyncio.sleep(self.update_interval)
-            
+            await self.send_printer_ready()
             result = os.system('sudo /sbin/shutdown -r now')
             
             if result == 0:
