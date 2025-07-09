@@ -105,6 +105,18 @@ class Klipper:
         except aiohttp.ClientError as e:
             logging.error("Error executing command: %s", e)
 
+    async def emergency_stop(self):
+        url = f"{self.parent.printer_url}/printer/emergency_stop"
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json={}, timeout=15) as response:
+                    response.raise_for_status()
+                    logging.info("Emergency stop executed via Moonraker")
+                    await self.parent.send_printer_ready()
+        except aiohttp.ClientError as e:
+            logging.error("Error executing emergency stop: %s", e)
+            await self.parent.send_printer_ready()
+            
     def _save_file_to_disk(self, file_content, file_path):
         """Synchronous helper to run blocking disk I/O in an executor."""
         logging.info(f"Saving file to {file_path}")

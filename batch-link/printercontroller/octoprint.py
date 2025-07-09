@@ -148,6 +148,31 @@ class Octoprint:
                     await self.parent.send_printer_ready()
         except aiohttp.ClientError as e:
             logging.info("Error executing command: %s", e)
+            await self.parent.send_printer_ready()
+    
+    async def emergency_stop(self):
+        # the API accepts either "command" or "commands" (an array) — use the array form
+        await self.stop_print()
+        payload = {
+            # "commands": [
+            #     "M104 S0",  # hotend off
+            #     "M140 S0",  # bed off
+            #     "M106 S0",  # fans off
+            #     "M84"       # steppers off
+            # ]
+            "command": 'M112'  
+        }
+        url = f"{self.parent.printer_url}/api/printer/command"
+        try:
+            async with aiohttp.ClientSession(headers=self.parent.headers) as session:
+                async with session.post(url, json=payload, timeout=15) as response:
+                    response.raise_for_status()
+                    logging.info("Emergency stop sequence sent")
+                    await self.parent.send_printer_ready()
+        except aiohttp.ClientError as e:
+            logging.error("Failed to send emergency stop: %s", e)
+            await self.parent.send_printer_ready()
+
 
     async def stop_print(self):
         url = f"{self.parent.printer_url}/api/job"
@@ -161,6 +186,7 @@ class Octoprint:
                     await self.parent.send_printer_ready()
         except aiohttp.ClientError as e:
             logging.info('Stopping print failed: %s', e)
+            await self.parent.send_printer_ready()
 
     async def reconnect_printer(self):
         url = f"{self.parent.printer_url}/api/connection"

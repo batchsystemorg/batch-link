@@ -131,7 +131,6 @@ class BatchPrinterConnect:
                 elif data['action'] == 'stop_print':
                     logging.info('Received stop print command for URL')
                     await self.send_printer_busy()
-                    # Cancel any running print task
                     if self.current_print_task and not self.current_print_task.done():
                         self.current_print_task.cancel()
                     await self.printer.stop_print()
@@ -147,7 +146,6 @@ class BatchPrinterConnect:
                 elif data['action'] == 'cmd':
                     logging.info('Received command to execute')
                     await self.send_printer_busy()
-                    # Non-blocking: let command run in background
                     if self.current_command_task and not self.current_command_task.done():
                         self.current_command_task.cancel()
                     self.current_command_task = asyncio.create_task(self.printer.send_command(data['content']))
@@ -163,9 +161,10 @@ class BatchPrinterConnect:
                     await self.printer.move_extruder(x, y, z)
                 elif data['action'] == 'reboot_system':
                     logging.info('Received reboot command')
-                    # await self.send_printer_busy()
-                    # Non-blocking: let reboot run in background
                     asyncio.create_task(self.reboot_system())
+                elif "emergency_stop" in data['action']:
+                    logging.info('Received emergency stop command')
+                    await self.printer.emergency_stop()
                 else:
                     logging.warning(f'Unknown command: {data.get("action", "no_action")}')
         except Exception as e:
