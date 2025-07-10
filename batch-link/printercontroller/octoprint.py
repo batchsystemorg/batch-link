@@ -10,6 +10,30 @@ from utils.helpers import parse_move_command, has_significant_difference
 class Octoprint:
     def __init__(self, parent):
         self.parent = parent  # Reference to BatchPrinterConnect
+        self.terminal_buffer = []  # Buffer to store terminal output lines
+        self.terminal_buffer_lock = asyncio.Lock()  # Thread-safe access to buffer
+        self.session_key = None  # Store session key for WebSocket auth
+        self.username = None  # Store username for WebSocket auth
+
+    async def get_session_key(self):
+        """Get session key for WebSocket authentication using API key"""
+        try:
+            login_url = f"{self.parent.printer_url}/api/login"
+            # Use passive login with API key
+            async with aiohttp.ClientSession() as session:
+                async with session.post(login_url, json={"passive": True}, headers=self.parent.headers) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        self.session_key = data.get("session")
+                        self.username = data.get("name", "api")  # Use "api" as default username
+                        logging.info(f"Successfully obtained session key for user: {self.username}")
+                        return True
+                    else:
+                        logging.error(f"Failed to get session key: {response.status}")
+                        return False
+        except Exception as e:
+            logging.error(f"Error getting session key: {e}")
+            return False
 
     async def printer_connection(self):
         octoprint_url = self.parent.printer_url + "/api/"
@@ -44,6 +68,12 @@ class Octoprint:
                     temp_updates['progress'] = printer_job.get('progress', {}).get('completion', 0.0)
                     temp_updates['print_time'] = printer_job.get('progress', {}).get('printTime', 0.0)
                     temp_updates['print_time_left'] = printer_job.get('progress', {}).get('printTimeLeft', 0.0)
+
+                    # Add terminal output to updates if available
+                    async with self.terminal_buffer_lock:
+                        if self.terminal_buffer:
+                            temp_updates['terminal_output'] = self.terminal_buffer.copy()
+                            self.terminal_buffer.clear()  # Clear buffer after copying
 
                     update_needed = False
                     for key, new_value in temp_updates.items():
@@ -152,7 +182,6 @@ class Octoprint:
     
     async def emergency_stop(self):
         # the API accepts either "command" or "commands" (an array) — use the array form
-        await self.stop_print()
         payload = {
             # "commands": [
             #     "M104 S0",  # hotend off
@@ -256,32 +285,99 @@ class Octoprint:
             logging.error(f"Failed to set temperatures: {e}")
                 
     async def listen_to_printer_push_api(self):
-        ws_url = f"ws://localhost/sockjs/websocket"
+        # Try with port 5000 first, then fallback to port 80
+        ws_url = "ws://localhost:5000/sockjs/websocket"
         while True:
             try:
+                # First, get a session key
+                if not self.session_key:
+                    logging.info("Getting session key for WebSocket authentication...")
+                    if not await self.get_session_key():
+                        logging.error("Failed to get session key, retrying in 10 seconds...")
+                        await asyncio.sleep(10)
+                        continue
+                
                 async with websockets.connect(ws_url, ping_interval=20, ping_timeout=20) as ws:
                     logging.info(f"Connected to OctoPrint Push API at {ws_url}")
-                    auth_payload = json.dumps({"auth": self.parent.octo_api_key})
-                    await ws.send(auth_payload)
-                    logging.info(f"Sent auth payload.")
-                    subscribe_payload = json.dumps({"command": "subscribe", "data": {"topics": ["event:GcodeSending", "event:GcodeSent"]}})
-                    await ws.send(subscribe_payload)
-                    logging.info(f"Subscribed to Gcode events.")
-                    async for message in ws:
-                        logging.info(f"[PUSH-API] Raw message: {message}")
+
+                    # 1) AUTH - Use username:session_key format as per docs
+                    auth_msg = {"auth": f"{self.username}:{self.session_key}"}
+                    await ws.send(json.dumps(auth_msg))
+                    logging.info(f"Sent auth payload for user: {self.username}")
+
+                    # 2) SUBSCRIBE (correct syntax!)
+                    sub_msg = {
+                        "subscribe": {
+                            "state": { "logs": True, "messages": False },
+                            "events": ["GcodeSending", "GcodeSent"]
+                        }
+                    }
+                    await ws.send(json.dumps(sub_msg))
+                    logging.info("Subscribed to Gcode events and terminal logs.")
+
+                    # 3) READ & PARSE
+                    async for raw in ws:
+                        logging.debug(f"[PUSH-API] Raw frame: {raw!r}")
+
+                        # 1) Try parsing as plain JSON:
                         try:
-                            data = json.loads(message)
-                            if data.get("type") == "event":
-                                event_name = data.get("name")
-                                payload = data.get("payload", {})
-                                if event_name in ["GcodeSending", "GcodeSent"]:
-                                    cmd = payload.get("cmd")
-                                    if cmd:
-                                        self.parent.last_gcode_command = cmd
-                                        logging.info(f"[PUSH-API] Last G-code command ({event_name}): {cmd}")
-                        except json.JSONDecodeError as e:
-                            logging.error(f"JSON decode error: {e}")
+                            parsed = json.loads(raw)
+                            # If it’s a dict, wrap it; if list, leave as is
+                            msgs = parsed if isinstance(parsed, list) else [parsed]
+                        except json.JSONDecodeError:
+                            # 2) Not plain JSON: handle SockJS frames
+                            if raw == "o":      # open
+                                continue
+                            if raw == "h":      # heartbeat
+                                continue
+                            if raw.startswith("a"):
+                                try:
+                                    msgs = json.loads(raw[1:])
+                                except json.JSONDecodeError as e:
+                                    logging.error(f"Failed to decode SockJS array frame: {e}")
+                                    continue
+                            else:
+                                logging.warning(f"[PUSH-API] Unhandled frame: {raw!r}")
+                                continue
+
+                        # 3) Process each message dict { "<type>": payload }
+                        for msg in msgs:
+                            # Each msg should be a single-key dict
+                            if not isinstance(msg, dict) or len(msg) != 1:
+                                logging.warning(f"[PUSH-API] Unexpected message shape: {msg}")
+                                continue
+
+                            mtype, payload = next(iter(msg.items()))
+                            # └──> e.g. mtype=="connected" or "current" or "event" etc :contentReference[oaicite:0]{index=0}
+
+                            if mtype in ("current", "history"):
+                                # payload["logs"], payload["messages"]
+                                logs = payload.get("logs", [])
+                                if logs:
+                                    async with self.terminal_buffer_lock:
+                                        for line in logs:
+                                            self.terminal_buffer.append(line.strip())
+                                        # Keep buffer size manageable
+                                        if len(self.terminal_buffer) > 500:
+                                            self.terminal_buffer = self.terminal_buffer[-500:]
+                                    logging.info(f"[PUSH-API] Added {len(logs)} terminal lines")
+                                    for line in logs:
+                                        logging.info(f"[PUSH-API][LOG] {line}")
+                            elif mtype == "event":
+                                event_name = payload.get("type")
+                                data = payload.get("payload", {})
+                                logging.info(f"[PUSH-API][EVENT] {event_name} → {data}")
+                                if event_name in {"GcodeSending", "GcodeSent"} and (cmd := data.get("cmd")):
+                                    self.parent.last_gcode_command = cmd
+                                    logging.info(f"Last G-code ({event_name}): {cmd}")
+                            else:
+                                logging.debug(f"[PUSH-API] Other ({mtype}): {payload}")
+                                
+
             except Exception as e:
                 logging.error(f"[PUSH-API] Connection error: {e}")
-            logging.info("Reconnecting to Push API in 5 seconds...")
+                # Clear session key on connection error - might be expired
+                self.session_key = None
+                self.username = None
+            logging.info("Reconnecting to Push API in 5 seconds…")
             await asyncio.sleep(5)

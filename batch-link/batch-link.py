@@ -231,6 +231,7 @@ class BatchPrinterConnect:
             'print_time': None,
             'print_time_left': None,
             'uploading_file_progress': None,
+            'terminal_output': None,
         }
 
         self.update_data_changed = True
@@ -241,20 +242,23 @@ class BatchPrinterConnect:
             logging.info(f"[UPDATE] Called")
             try:
                 time_since_last = time.time() - last_sent_time
-                if any(value is not None for value in self.updates.values()) and self.remote_websocket is not None:
+                if any(value is not None for value in self.updates.values()):
                     if not self.update_data_changed and time_since_last < 120:
                         await asyncio.sleep(self.update_interval)
                         continue
                     
-                    logging.info(f"[UPDATE] Sending update, printer status: {self.updates['status']}")
-                    msg = {
-                        'action': 'printer_update',
-                        'content': self.updates
-                    }
-                    serialised_json = json.dumps(msg)
-                    self.updates['cancelled'] = None
-                    self.updates['uploading_file_progress'] = self.uploading_file_progress
-                    await self.remote_websocket.send(serialised_json)
+                    # Check websocket and send atomically to avoid race condition
+                    websocket = self.remote_websocket
+                    if websocket is not None:
+                        logging.info(f"[UPDATE] Sending update, printer status: {self.updates['status']}")
+                        msg = {
+                            'action': 'printer_update',
+                            'content': self.updates
+                        }
+                        serialised_json = json.dumps(msg)
+                        self.updates['cancelled'] = None
+                        self.updates['uploading_file_progress'] = self.uploading_file_progress
+                        await websocket.send(serialised_json)
 
                     self.update_data_changed = False
                     last_sent_time = time.time()
@@ -274,14 +278,16 @@ class BatchPrinterConnect:
             logging.info(f"[VERSION] {self.version}")
             logging.info(f"[ALIVE] Called")
             try:
-                if self.remote_websocket is not None:
+                # Check websocket and send atomically to avoid race condition
+                websocket = self.remote_websocket
+                if websocket is not None:
                     msg = {
                             'action': 'printer_alive',
                             'content': {} 
                     }
                     serialised_json = json.dumps(msg)
                     logging.info(f"[ALIVE] Sending")
-                    await self.remote_websocket.send(serialised_json)
+                    await websocket.send(serialised_json)
                 else:
                     logging.warning(f"[ALIVE] Either the websocket isnt initialised or a value is None")
 
@@ -294,13 +300,14 @@ class BatchPrinterConnect:
             await asyncio.sleep(self.alive_interval)
     
     async def send_printer_busy(self):
-        if self.remote_websocket is not None:
+        websocket = self.remote_websocket
+        if websocket is not None:
             try:
                 msg = {
                     'action': 'printer_busy',
                     'content': {}
                 }
-                await self.remote_websocket.send(json.dumps(msg))
+                await websocket.send(json.dumps(msg))
                 logging.info('Sent printer_busy update')
             except Exception as e:
                 logging.warning(f"Failed to send printer_busy: {e}")
@@ -308,13 +315,14 @@ class BatchPrinterConnect:
             logging.warning("WebSocket not connected — cannot send printer_busy")
     
     async def send_printer_ready(self):
-        if self.remote_websocket is not None:
+        websocket = self.remote_websocket
+        if websocket is not None:
             try:
                 msg = {
                     'action': 'printer_ready',
                     'content': {}
                 }
-                await self.remote_websocket.send(json.dumps(msg))
+                await websocket.send(json.dumps(msg))
                 logging.info('Sent printer_ready update')
             except Exception as e:
                 logging.warning(f"Failed to send printer_ready: {e}")
@@ -331,12 +339,19 @@ def main():
         loop.add_signal_handler(sig, loop.stop)
 
     try:
-        tasks = asyncio.gather(
+        # Build list of tasks to run
+        task_list = [
             communicator.remote_connection(),
             communicator.printer.printer_connection(),
             communicator.send_printer_update(),
             communicator.send_printer_alive(),
-        )
+        ]
+        
+        # Add OctoPrint-specific push API listener if using OctoPrint
+        if communicator.printerdriver == 'OCTOPRINT':
+            task_list.append(communicator.printer.listen_to_printer_push_api())
+        
+        tasks = asyncio.gather(*task_list)
         loop.run_until_complete(tasks)
     finally:
         loop.close()
