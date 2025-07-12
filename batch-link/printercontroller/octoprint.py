@@ -5,6 +5,7 @@ import asyncio
 import aiohttp  # Use aiohttp instead of requests
 import io
 import json
+from datetime import datetime
 from utils.helpers import parse_move_command, has_significant_difference
 
 class Octoprint:
@@ -356,7 +357,9 @@ class Octoprint:
                                 if logs:
                                     async with self.terminal_buffer_lock:
                                         for line in logs:
-                                            self.terminal_buffer.append(line.strip())
+                                            if not line.strip().startswith("Recv: T:"):
+                                                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                                self.terminal_buffer.append(f"[{timestamp}]: {line.strip()}")
                                         # Keep buffer size manageable
                                         if len(self.terminal_buffer) > 500:
                                             self.terminal_buffer = self.terminal_buffer[-500:]
