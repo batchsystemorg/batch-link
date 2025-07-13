@@ -14,7 +14,7 @@ from utils.helpers import parse_move_command
 
 class BatchPrinterConnect:
     def __init__(self):
-        self.version = 0.250708
+        self.version = 0.250713
         logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
         self.username = os.environ.get('USER')
         self.config_file_path = f"/home/{self.username}/batch-link/batch-link.cfg"
