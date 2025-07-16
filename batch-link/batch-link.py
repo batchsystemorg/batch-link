@@ -14,7 +14,7 @@ from utils.helpers import parse_move_command
 
 class BatchPrinterConnect:
     def __init__(self):
-        self.version = 0.250713
+        self.version = 0.250715
         logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
         self.username = os.environ.get('USER')
         self.config_file_path = f"/home/{self.username}/batch-link/batch-link.cfg"
@@ -34,10 +34,13 @@ class BatchPrinterConnect:
         
         self.reconnect_interval = int(self.config['connection_settings']['RECONNECT_INTERVAL'])
         self.remote_websocket_url = self.config['connection_settings']['REMOTE_WS_URL']
-        self.octo_api_key = self.config['printer_details']['API_KEY'].strip()
         self.printer_url = 'http://localhost'
         self.uploading_file_progress = None
         self.uuid = self.config['printer_details']['UUID'].strip()
+        self.octo_api_key = self.config['printer_details']['API_KEY'].strip()
+        self.headers = {
+            'X-Api-Key': self.octo_api_key
+        }
         self.update_data_changed = True
 
         # Task tracking for non-blocking operations
@@ -58,14 +61,19 @@ class BatchPrinterConnect:
         self.last_status = None
         self.last_gcode_command = None
 
-        self.headers = {
-            'X-Api-Key': self.octo_api_key
-        }
-
         self.printer_connection_id = None
         self.initialUpdatesValues()
         self.update_interval = 2
         self.alive_interval = 10
+        
+        # Initialise Printer
+        self.printerdriver = self.config['printer_details']['DRIVER'].strip()
+        if self.printerdriver == 'OCTOPRINT':
+            self.printer = Octoprint(self)
+        elif self.printerdriver == 'KLIPPER':
+            self.printer = Klipper(self)
+        else:
+            raise ValueError(f"Printer driver not defined in config")
 
         self.remote_websocket = None
 
