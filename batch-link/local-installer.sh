@@ -61,7 +61,10 @@ else
     echo -e "\033[31mFailed to add reboot permissions"
 fi
 
-echo 'The batch-link plugin has been successfully installed on your printer and is now running.'
+echo 'Setting up OctoPrint from Backup'
+./oprint/bin/octoprint plugins backup:restore /home/$username/batch-link/octoprint-backup.zip
+
+echo 'The batch-link plugin has been successfully installed on your printer and is now running. With warm wishes, Marci.'
 echo -e "\033[32m "
 echo -e "Please add its UUID to your account to have it appear as a pritner"
 echo -e "\033[32;1m${UUID}"
